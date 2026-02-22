@@ -1,6 +1,8 @@
-# Feishu CLI Proxy
+# Felay
 
-本地代理工具，通过 `feishu run ...` 启动 CLI 会话，将本地终端与飞书机器人桥接——支持双向交互对话和过程输出推送。
+本地代理工具，通过 `felay run ...` 启动 CLI 会话，将本地终端与飞书机器人桥接——支持双向交互对话和过程输出推送。
+
+> **Felay** = **Fe**(ishu) + Re**lay** — 飞书中继
 
 ## 架构
 
@@ -17,7 +19,7 @@
              │ Named Pipe / Unix Socket
 ┌────────────┴────────────────────┐
 │      CLI (Node.js + PTY)        │
-│  feishu run <command> [args]    │
+│  felay run <command> [args]     │
 └─────────────────────────────────┘
 ```
 
@@ -33,13 +35,13 @@
 ## 项目结构
 
 ```
-feishu-cli/
+felay/
 ├── packages/
 │   ├── shared/             # 共享类型与 IPC 消息定义
 │   │   └── src/index.ts
 │   ├── cli/                # CLI 入口
 │   │   └── src/
-│   │       ├── index.ts          # 命令解析 (feishu run / daemon)
+│   │       ├── index.ts          # 命令解析 (felay run / daemon)
 │   │       ├── daemonClient.ts   # Daemon IPC 客户端
 │   │       └── daemonLifecycle.ts# 自动启动 Daemon
 │   ├── daemon/             # 后台守护服务
@@ -47,7 +49,11 @@ feishu-cli/
 │   │       ├── index.ts          # IPC 服务器 + 消息路由
 │   │       ├── ipc.ts            # IPC 路径
 │   │       ├── sessionRegistry.ts# 会话注册表
-│   │       └── configManager.ts  # 配置持久化
+│   │       ├── configManager.ts  # 配置持久化
+│   │       ├── feishuManager.ts  # 飞书 SDK 交互
+│   │       ├── outputBuffer.ts   # 输出缓冲（交互/推送/摘要）
+│   │       ├── secretStore.ts    # AES-256-GCM 密钥加密
+│   │       └── sanitizer.ts      # ANSI 清洗 + 噪音过滤
 │   └── gui/                # Tauri 桌面应用
 │       ├── src-tauri/
 │       │   └── src/main.rs       # Rust 后端 (Tauri commands + 系统托盘)
@@ -57,10 +63,18 @@ feishu-cli/
 │           └── main.tsx          # 入口
 ├── pnpm-workspace.yaml
 ├── tsconfig.base.json
-├── ARCHITECTURE.md
-├── PRD.md
 └── package.json
 ```
+
+## 核心功能
+
+- **双向机器人**：通过飞书 WSClient 长连接实现 CLI ↔ 飞书双向对话
+- **推送机器人**：Webhook 单向通知，支持合并窗口与限流处理
+- **任务结束总结**：会话退出时发送包含最后输出的飞书卡片
+- **CLI 断线重连**：Daemon 崩溃不影响本地 PTY，重启后自动恢复桥接
+- **密钥加密存储**：AES-256-GCM 加密机器人密钥，磁盘上始终密文
+- **GUI 管理界面**：会话绑定、机器人增删改查、密码可见切换、动态托盘菜单
+- **健康监测**：WSClient 断连检测与警告通知
 
 ## 前置要求
 
@@ -103,14 +117,14 @@ pnpm typecheck
 在终端中运行：
 
 ```bash
-feishu run <command> [args...]
+felay run <command> [args...]
 ```
 
 示例：
 
 ```bash
-feishu run echo hello
-feishu run claude --project my-project
+felay run echo hello
+felay run claude --project my-project
 ```
 
 CLI 会自动拉起 Daemon（如果未运行），通过 PTY 启动子进程并注册会话。
@@ -118,9 +132,9 @@ CLI 会自动拉起 Daemon（如果未运行），通过 PTY 启动子进程并�
 ### 2. 管理 Daemon
 
 ```bash
-feishu daemon start    # 手动启动
-feishu daemon status   # 查看状态
-feishu daemon stop     # 优雅关闭
+felay daemon start    # 手动启动
+felay daemon status   # 查看状态
+felay daemon stop     # 优雅关闭
 ```
 
 ### 3. GUI 操作
@@ -133,7 +147,7 @@ feishu daemon stop     # 优雅关闭
 
 ## 配置
 
-配置文件位于 `~/.feishu-cli/config.json`，首次启动 Daemon 时自动创建：
+配置文件位于 `~/.felay/config.json`，首次启动 Daemon 时自动创建：
 
 ```json
 {
@@ -165,32 +179,27 @@ feishu daemon stop     # 优雅关闭
 
 | 文件 | 用途 |
 |------|------|
-| `~/.feishu-cli/daemon.json` | Daemon 锁文件（PID + IPC 地址） |
-| `~/.feishu-cli/config.json` | 机器人配置 + 应用设置 |
+| `~/.felay/daemon.json` | Daemon 锁文件（PID + IPC 地址） |
+| `~/.felay/config.json` | 机器人配置 + 应用设置（密钥已加密） |
+| `~/.felay/.master-key` | AES-256-GCM 主密钥（权限受限） |
 
 ## IPC 协议
 
 Daemon 使用 JSON-line 协议通信（每条消息一行 JSON + `\n`）。
-
-**M1 消息**（已实现）：
 
 | 消息类型 | 方向 | 说明 |
 |----------|------|------|
 | `register_session` | CLI → Daemon | 注册新会话 |
 | `pty_output` | CLI → Daemon | PTY 输出转发 |
 | `session_ended` | CLI → Daemon | 会话结束 |
+| `feishu_input` | Daemon → CLI | 飞书用户输入转发到 PTY |
 | `status_request/response` | Any → Daemon | 查询状态 |
 | `stop_request/response` | Any → Daemon | 停止 Daemon |
-
-**M2 消息**（已实现）：
-
-| 消息类型 | 方向 | 说明 |
-|----------|------|------|
 | `list_bots_request/response` | GUI → Daemon | 列出所有机器人 |
-| `save_bot_request/response` | GUI → Daemon | 新增/编辑机器人（upsert） |
+| `save_bot_request/response` | GUI → Daemon | 新增/编辑机器人 |
 | `delete_bot_request/response` | GUI → Daemon | 删除机器人 |
-| `bind_bot_request` / `bind_bot_response` | GUI → Daemon | 绑定机器人到会话 |
-| `unbind_bot_request` / `bind_bot_response` | GUI → Daemon | 解绑机器人 |
+| `bind_bot_request` / `unbind_bot_request` | GUI → Daemon | 绑定/解绑机器人 |
+| `test_bot_request/response` | GUI → Daemon | 测试机器人连接 |
 | `get_config_request/response` | GUI → Daemon | 读取配置 |
 | `save_config_request/response` | GUI → Daemon | 保存配置 |
 
@@ -206,8 +215,8 @@ Daemon 使用 JSON-line 协议通信（每条消息一行 JSON + `\n`）。
 
 - [x] **M1** — CLI + PTY + Daemon IPC + 会话注册
 - [x] **M2** — 机器人配置 CRUD + 会话绑定 + 设置持久化
-- [ ] **M3** — 飞书双向对话与过程推送
-- [ ] **M4** — 任务结束总结与稳定性优化
+- [x] **M3** — 飞书双向对话与过程推送
+- [x] **M4** — 任务结束总结、CLI 断线重连、密钥加密、健康监测
 
 ## 许可
 
