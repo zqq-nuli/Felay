@@ -84,40 +84,33 @@ felay/
 
 ## 安装
 
-### 从源码安装（CLI + Daemon）
+### Windows 安装程序（推荐）
+
+下载 `Felay_x.x.x_x64-setup.exe` 安装程序，双击安装即可。
+
+安装后：
+- GUI 从开始菜单或系统托盘启动
+- CLI 命令 `felay` 全局可用（自动注册 PATH）
+- 卸载在 **设置 → 应用 → 已安装的应用** 中完成
+
+### 从源码构建
+
+> 需要 Node.js >= 18、pnpm >= 10、[Rust](https://www.rust-lang.org/tools/install)
 
 ```bash
 git clone https://github.com/zqq-nuli/Felay.git
 cd Felay
-pnpm run setup    # 安装依赖 + 编译 + 全局注册 felay 命令
+pnpm install
+pnpm run build:all    # 编译 TS + 打包独立 exe
+pnpm run build:gui    # 构建 NSIS 安装程序（含 GUI + CLI + Daemon）
+# 安装包输出在 packages/gui/src-tauri/target/release/bundle/nsis/
 ```
 
-验证安装成功：
+### 开发者安装（仅 CLI）
 
 ```bash
+pnpm run setup    # 安装依赖 + 编译 + 全局注册 felay 命令（需要 Node.js）
 felay --help
-# 应显示 "Felay — Feishu CLI Proxy" 帮助信息
-```
-
-### 构建 GUI 桌面应用
-
-> 需要 [Rust](https://www.rust-lang.org/tools/install) 环境。
-
-```bash
-pnpm run build:gui
-# 安装包输出在 packages/gui/src-tauri/target/release/bundle/
-# Windows: nsis/ 目录下有 .exe 安装程序
-```
-
-### 卸载
-
-```bash
-# 移除全局 felay 命令
-pnpm run uninstall
-
-# 清理配置文件（可选）
-# Windows: rmdir /s %USERPROFILE%\.felay
-# macOS/Linux: rm -rf ~/.felay
 ```
 
 ## 开发
