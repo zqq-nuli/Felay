@@ -7,17 +7,17 @@ import {
   type DaemonLockFile,
   type StatusResponse,
   type StopResponse,
-} from "@feishu-cli/shared";
+} from "@felay/shared";
 
-const WINDOWS_PIPE = "\\\\.\\pipe\\feishu-cli";
-const UNIX_SOCKET = `${os.homedir()}/.feishu-cli/daemon.sock`;
+const WINDOWS_PIPE = "\\\\.\\pipe\\felay";
+const UNIX_SOCKET = `${os.homedir()}/.felay/daemon.sock`;
 
 export function getIpcPath(): string {
   return process.platform === "win32" ? WINDOWS_PIPE : UNIX_SOCKET;
 }
 
 export function getLockFilePath(): string {
-  return path.join(os.homedir(), ".feishu-cli", "daemon.json");
+  return path.join(os.homedir(), ".felay", "daemon.json");
 }
 
 export async function readLockFile(): Promise<DaemonLockFile | null> {

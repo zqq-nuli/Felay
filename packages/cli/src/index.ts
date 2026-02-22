@@ -9,7 +9,7 @@ import {
   type SessionRegistration,
   type PtyOutputEvent,
   type SessionEndedEvent,
-} from "@feishu-cli/shared";
+} from "@felay/shared";
 import { connectDaemon, daemonStatus, daemonStop } from "./daemonClient.js";
 import { ensureDaemonRunning, getLiveDaemonIpc } from "./daemonLifecycle.js";
 
@@ -105,7 +105,7 @@ async function runCli(cli: string, args: string[]): Promise<void> {
     });
 
     socket.on("error", (err: Error) => {
-      process.stderr.write(`[feishu] daemon connection error: ${err.message}\n`);
+      process.stderr.write(`[felay] daemon connection error: ${err.message}\n`);
       handleDisconnect();
     });
 
@@ -123,7 +123,7 @@ async function runCli(cli: string, args: string[]): Promise<void> {
 
     if (sessionEnded) return;
 
-    process.stderr.write("[feishu] daemon connection lost. PTY continues locally.\n");
+    process.stderr.write("[felay] daemon connection lost. PTY continues locally.\n");
     attemptReconnect(0);
   }
 
@@ -133,7 +133,7 @@ async function runCli(cli: string, args: string[]): Promise<void> {
 
     if (attempt >= reconnectConfig.maxRetries) {
       process.stderr.write(
-        `[feishu] reconnection failed after ${reconnectConfig.maxRetries} attempts. Feishu bridging disabled.\n`
+        `[felay] reconnection failed after ${reconnectConfig.maxRetries} attempts. Feishu bridging disabled.\n`
       );
       reconnecting = false;
       return;
@@ -153,17 +153,17 @@ async function runCli(cli: string, args: string[]): Promise<void> {
         const ipc = await getLiveDaemonIpc();
         if (!ipc) {
           process.stderr.write(
-            `[feishu] daemon not available, retry ${attempt + 1}/${reconnectConfig.maxRetries}\n`
+            `[felay] daemon not available, retry ${attempt + 1}/${reconnectConfig.maxRetries}\n`
           );
           attemptReconnect(attempt + 1);
           return;
         }
         const socket = await connectDaemon(ipc);
-        process.stderr.write("[feishu] reconnected to daemon\n");
+        process.stderr.write("[felay] reconnected to daemon\n");
         setupSocket(socket);
       } catch {
         process.stderr.write(
-          `[feishu] reconnect attempt ${attempt + 1}/${reconnectConfig.maxRetries} failed\n`
+          `[felay] reconnect attempt ${attempt + 1}/${reconnectConfig.maxRetries} failed\n`
         );
         attemptReconnect(attempt + 1);
       }
@@ -177,7 +177,7 @@ async function runCli(cli: string, args: string[]): Promise<void> {
     setupSocket(socket);
   } catch {
     process.stderr.write(
-      "[feishu] daemon unavailable. PTY running without Feishu bridging.\n"
+      "[felay] daemon unavailable. PTY running without Feishu bridging.\n"
     );
     attemptReconnect(0);
   }
@@ -236,7 +236,7 @@ async function daemonStart(): Promise<void> {
   await ensureDaemonRunning();
   const status = await daemonStatus();
   console.log(
-    `[feishu] daemon running pid=${status.payload.daemonPid} sessions=${status.payload.activeSessions}`
+    `[felay] daemon running pid=${status.payload.daemonPid} sessions=${status.payload.activeSessions}`
   );
 }
 
@@ -244,7 +244,7 @@ async function daemonStatusCommand(): Promise<void> {
   try {
     const status = await daemonStatus();
     console.log(
-      `[feishu] daemon running pid=${status.payload.daemonPid} sessions=${status.payload.activeSessions}`
+      `[felay] daemon running pid=${status.payload.daemonPid} sessions=${status.payload.activeSessions}`
     );
     return;
   } catch {
@@ -253,17 +253,17 @@ async function daemonStatusCommand(): Promise<void> {
 
   const ipc = await getLiveDaemonIpc();
   if (!ipc) {
-    console.log("[feishu] daemon not running");
+    console.log("[felay] daemon not running");
     return;
   }
 
-  console.log("[feishu] daemon pid exists but not reachable");
+  console.log("[felay] daemon pid exists but not reachable");
 }
 
 async function daemonStopCommand(): Promise<void> {
   try {
     await daemonStop();
-    console.log("[feishu] daemon stopped");
+    console.log("[felay] daemon stopped");
     return;
   } catch {
     // fallback to lock-based check
@@ -271,17 +271,17 @@ async function daemonStopCommand(): Promise<void> {
 
   const ipc = await getLiveDaemonIpc();
   if (!ipc) {
-    console.log("[feishu] daemon not running");
+    console.log("[felay] daemon not running");
     return;
   }
 
-  console.log("[feishu] failed to stop daemon");
+  console.log("[felay] failed to stop daemon");
   process.exit(1);
 }
 
 program
-  .name("feishu")
-  .description("Feishu CLI proxy")
+  .name("felay")
+  .description("Felay — Feishu CLI Proxy")
   .command("run <cli> [args...]")
   .description("Run CLI in PTY and bridge to daemon")
   .allowUnknownOption(true)
@@ -295,6 +295,6 @@ daemon.command("status").action(async () => daemonStatusCommand());
 daemon.command("stop").action(async () => daemonStopCommand());
 
 program.parseAsync(process.argv).catch((err) => {
-  console.error("[feishu] fatal:", err);
+  console.error("[felay] fatal:", err);
   process.exit(1);
 });

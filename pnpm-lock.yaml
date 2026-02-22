@@ -10,7 +10,7 @@ importers:
 
   packages/cli:
     dependencies:
-      '@feishu-cli/shared':
+      '@felay/shared':
         specifier: workspace:*
         version: link:../shared
       commander:
@@ -35,7 +35,7 @@ importers:
 
   packages/daemon:
     dependencies:
-      '@feishu-cli/shared':
+      '@felay/shared':
         specifier: workspace:*
         version: link:../shared
       '@larksuiteoapi/node-sdk':

@@ -6,7 +6,7 @@ import {
   type FeishuInputEvent,
   type InteractiveBotConfig,
   type PushBotConfig,
-} from "@feishu-cli/shared";
+} from "@felay/shared";
 import type { SessionRegistry } from "./sessionRegistry.js";
 import type { ConfigManager } from "./configManager.js";
 import type { OutputBuffer } from "./outputBuffer.js";
@@ -85,14 +85,14 @@ export class FeishuManager {
   /** Start (or reuse) a WSClient for the given interactive bot. */
   async startInteractiveBot(botId: string): Promise<void> {
     if (this.connections.has(botId)) {
-      console.log(`[feishu] bot ${botId} already connected`);
+      console.log(`[felay] bot ${botId} already connected`);
       return;
     }
 
     const bots = this.configManager.getBots();
     const botConfig = bots.interactive.find((b) => b.id === botId);
     if (!botConfig) {
-      console.error(`[feishu] interactive bot ${botId} not found in config`);
+      console.error(`[felay] interactive bot ${botId} not found in config`);
       return;
     }
 
@@ -146,16 +146,16 @@ export class FeishuManager {
           if (connection.healthy) {
             connection.healthy = false;
             connection.unhealthySince = Date.now();
-            console.log(`[feishu] bot ${botId} appears disconnected`);
+            console.log(`[felay] bot ${botId} appears disconnected`);
           } else if (
             connection.unhealthySince &&
             Date.now() - connection.unhealthySince > maxUnhealthyMs
           ) {
-            console.error(`[feishu] bot ${botId} reconnection likely exhausted`);
+            console.error(`[felay] bot ${botId} reconnection likely exhausted`);
           }
         } else {
           if (!connection.healthy) {
-            console.log(`[feishu] bot ${botId} reconnected`);
+            console.log(`[felay] bot ${botId} reconnected`);
           }
           connection.healthy = true;
           connection.unhealthySince = undefined;
@@ -163,9 +163,9 @@ export class FeishuManager {
       }, 30_000);
 
       this.connections.set(botId, connection);
-      console.log(`[feishu] bot ${botId} (${botConfig.name}) WSClient connected`);
+      console.log(`[felay] bot ${botId} (${botConfig.name}) WSClient connected`);
     } catch (err) {
-      console.error(`[feishu] failed to start bot ${botId}:`, err);
+      console.error(`[felay] failed to start bot ${botId}:`, err);
     }
   }
 
@@ -177,7 +177,7 @@ export class FeishuManager {
     if (conn.healthCheckTimer) clearInterval(conn.healthCheckTimer);
     // The SDK doesn't expose a clean close() on WSClient; delete reference
     this.connections.delete(botId);
-    console.log(`[feishu] bot ${botId} WSClient stopped`);
+    console.log(`[felay] bot ${botId} WSClient stopped`);
   }
 
   /** Check if a bot is connected and healthy. */
@@ -230,13 +230,13 @@ export class FeishuManager {
       const rawContent = event.message?.content;
 
       if (!messageId || !chatId || !rawContent) {
-        console.log("[feishu] ignoring event with missing fields");
+        console.log("[felay] ignoring event with missing fields");
         return;
       }
 
       // Only handle text messages
       if (messageType !== "text") {
-        console.log(`[feishu] ignoring non-text message type: ${messageType}`);
+        console.log(`[felay] ignoring non-text message type: ${messageType}`);
         return;
       }
 
@@ -258,7 +258,7 @@ export class FeishuManager {
           data: { reaction_type: { emoji_type: "EYES" } },
         });
       } catch (err) {
-        console.log("[feishu] failed to add reaction:", err);
+        console.log("[felay] failed to add reaction:", err);
       }
 
       // Find session bound to this bot
@@ -267,7 +267,7 @@ export class FeishuManager {
         .find((s) => s.interactiveBotId === botId && s.status !== "ended");
 
       if (!session) {
-        console.log(`[feishu] no active session bound to bot ${botId}`);
+        console.log(`[felay] no active session bound to bot ${botId}`);
         // Send a reply indicating no session
         try {
           await client.im.v1.message.create({
@@ -287,7 +287,7 @@ export class FeishuManager {
       // Send feishu_input to CLI via socket
       const socket = this.socketMap.get(session.sessionId);
       if (!socket || socket.destroyed) {
-        console.log(`[feishu] no socket for session ${session.sessionId}`);
+        console.log(`[felay] no socket for session ${session.sessionId}`);
         return;
       }
 
@@ -314,10 +314,10 @@ export class FeishuManager {
       }
 
       console.log(
-        `[feishu] forwarded message to session ${session.sessionId}: ${text.slice(0, 50)}...`
+        `[felay] forwarded message to session ${session.sessionId}: ${text.slice(0, 50)}...`
       );
     } catch (err) {
-      console.error("[feishu] error handling message:", err);
+      console.error("[felay] error handling message:", err);
     }
   }
 
@@ -350,7 +350,7 @@ export class FeishuManager {
         },
       });
     } catch (err) {
-      console.error(`[feishu] failed to send reply for session ${sessionId}:`, err);
+      console.error(`[felay] failed to send reply for session ${sessionId}:`, err);
     }
 
     // Remove EYES reaction
@@ -390,7 +390,7 @@ export class FeishuManager {
     if (!cleaned.trim()) return;
 
     if (!FeishuManager.isAllowedWebhookUrl(botConfig.webhook)) {
-      console.error(`[feishu] blocked push to untrusted webhook URL: ${botConfig.webhook}`);
+      console.error(`[felay] blocked push to untrusted webhook URL: ${botConfig.webhook}`);
       return;
     }
 
@@ -423,13 +423,13 @@ export class FeishuManager {
         // Success
       } else if (result.code === 11232) {
         // Rate limited — increase merge window
-        console.log(`[feishu] push rate limited for session ${sessionId}, increasing merge window`);
+        console.log(`[felay] push rate limited for session ${sessionId}, increasing merge window`);
         this.outputBuffer.increaseMergeWindow(sessionId);
       } else {
-        console.error(`[feishu] push failed for session ${sessionId}:`, result);
+        console.error(`[felay] push failed for session ${sessionId}:`, result);
       }
     } catch (err) {
-      console.error(`[feishu] push error for session ${sessionId}:`, err);
+      console.error(`[felay] push error for session ${sessionId}:`, err);
     }
   }
 
@@ -496,7 +496,7 @@ export class FeishuManager {
     try {
       const body: Record<string, unknown> = {
         msg_type: "text",
-        content: { text: "[Feishu CLI Proxy] 测试消息" },
+        content: { text: "[Felay] 测试消息" },
       };
 
       if (botConfig.secret) {
@@ -567,7 +567,7 @@ export class FeishuManager {
             },
           });
         } catch (err) {
-          console.error(`[feishu] failed to send task summary:`, err);
+          console.error(`[felay] failed to send task summary:`, err);
         }
       }
 

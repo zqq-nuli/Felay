@@ -1,4 +1,4 @@
-import type { SessionStatus } from "@feishu-cli/shared";
+import type { SessionStatus } from "@felay/shared";
 
 export interface SessionInfo {
   sessionId: string;

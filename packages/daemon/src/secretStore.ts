@@ -12,7 +12,7 @@ const IV_LENGTH = 12; // GCM recommended
 const TAG_LENGTH = 16; // GCM auth tag
 
 function getKeyPath(): string {
-  return path.join(os.homedir(), ".feishu-cli", KEY_FILE);
+  return path.join(os.homedir(), ".felay", KEY_FILE);
 }
 
 function ensureMasterKey(): Buffer {

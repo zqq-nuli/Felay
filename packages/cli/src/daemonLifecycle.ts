@@ -47,7 +47,7 @@ export async function ensureDaemonRunning(): Promise<void> {
 
   const child: ChildProcess = spawn(
     "pnpm",
-    ["--filter", "@feishu-cli/daemon", "dev"],
+    ["--filter", "@felay/daemon", "dev"],
     {
       cwd: workspaceRoot,
       shell: process.platform === "win32",

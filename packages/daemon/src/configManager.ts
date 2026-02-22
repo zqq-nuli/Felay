@@ -8,12 +8,12 @@ import type {
   BotType,
   ReconnectSettings,
   PushSettings,
-} from "@feishu-cli/shared";
-import { defaultAppConfig } from "@feishu-cli/shared";
+} from "@felay/shared";
+import { defaultAppConfig } from "@felay/shared";
 import { encrypt, decrypt, isEncrypted } from "./secretStore.js";
 
 function getConfigPath(): string {
-  return path.join(os.homedir(), ".feishu-cli", "config.json");
+  return path.join(os.homedir(), ".felay", "config.json");
 }
 
 export class ConfigManager {

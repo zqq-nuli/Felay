@@ -1,13 +1,13 @@
 {
-  "name": "feishu-cli",
+  "name": "felay",
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@10.5.2",
   "scripts": {
-    "dev": "pnpm --parallel --filter @feishu-cli/daemon --filter @feishu-cli/cli dev",
-    "dev:daemon": "pnpm --filter @feishu-cli/daemon dev",
-    "dev:cli": "pnpm --filter @feishu-cli/cli dev",
-    "dev:gui": "pnpm --filter @feishu-cli/gui dev",
+    "dev": "pnpm --parallel --filter @felay/daemon --filter @felay/cli dev",
+    "dev:daemon": "pnpm --filter @felay/daemon dev",
+    "dev:cli": "pnpm --filter @felay/cli dev",
+    "dev:gui": "pnpm --filter @felay/gui dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck"
   }

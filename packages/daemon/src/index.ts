@@ -15,7 +15,7 @@ import {
   type GetConfigResponse,
   type SaveConfigResponse,
   type DaemonLockFile,
-} from "@feishu-cli/shared";
+} from "@felay/shared";
 import { getIpcPath } from "./ipc.js";
 import { SessionRegistry } from "./sessionRegistry.js";
 import { ConfigManager } from "./configManager.js";
@@ -155,7 +155,7 @@ const saveConfigSchema = z.object({
 /* ── Helpers ── */
 
 function getStateDir(): string {
-  return path.join(os.homedir(), ".feishu-cli");
+  return path.join(os.homedir(), ".felay");
 }
 
 function getLockFilePath(): string {
@@ -295,7 +295,7 @@ async function main(): Promise<void> {
 
   server.listen(ipcPath, async () => {
     await writeLockFile(ipcPath);
-    console.log(`[daemon] listening on ${ipcPath}`);
+    console.log(`[felay:daemon] listening on ${ipcPath}`);
   });
 
   // Prune ended sessions every 5 minutes to prevent unbounded memory growth
@@ -584,6 +584,6 @@ async function handleMessage(
 }
 
 main().catch((error) => {
-  console.error("[daemon] failed to start", error);
+  console.error("[felay:daemon] failed to start", error);
   process.exit(1);
 });

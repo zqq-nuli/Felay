@@ -1,5 +1,5 @@
 {
-  "name": "@feishu-cli/daemon",
+  "name": "@felay/daemon",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,7 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@feishu-cli/shared": "workspace:*",
+    "@felay/shared": "workspace:*",
     "@larksuiteoapi/node-sdk": "^1.59.0",
     "zod": "^3.24.2"
   },

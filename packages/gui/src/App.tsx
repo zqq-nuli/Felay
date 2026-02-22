@@ -160,7 +160,7 @@ export function App() {
   return (
     <div className="window">
       <header className="titlebar">
-        <strong>Feishu CLI Proxy</strong>
+        <strong>Felay</strong>
       </header>
       <div className="body">
         <aside className="sidebar">
@@ -254,7 +254,7 @@ function SessionsView({
         {current ? (
           <SessionDetail session={current} bots={bots} />
         ) : (
-          <p>在终端执行 feishu run claude ... 启动会话</p>
+          <p>在终端执行 felay run claude ... 启动会话</p>
         )}
       </section>
     </div>

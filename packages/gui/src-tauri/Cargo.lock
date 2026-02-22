@@ -665,7 +665,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "feishu-gui"
+name = "felay-gui"
 version = "0.1.0"
 dependencies = [
  "serde",

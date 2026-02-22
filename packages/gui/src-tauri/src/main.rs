@@ -121,18 +121,18 @@ fn get_home_dir() -> Option<String> {
 
 fn get_lock_file_path() -> Option<PathBuf> {
   let home = get_home_dir()?;
-  Some(PathBuf::from(home).join(".feishu-cli").join("daemon.json"))
+  Some(PathBuf::from(home).join(".felay").join("daemon.json"))
 }
 
 fn default_ipc_path() -> Option<String> {
   #[cfg(target_os = "windows")]
   {
-    Some(String::from("\\\\.\\pipe\\feishu-cli"))
+    Some(String::from("\\\\.\\pipe\\felay"))
   }
   #[cfg(target_family = "unix")]
   {
     let home = get_home_dir()?;
-    Some(format!("{home}/.feishu-cli/daemon.sock"))
+    Some(format!("{home}/.felay/daemon.sock"))
   }
 }
 
