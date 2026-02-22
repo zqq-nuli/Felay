@@ -3,7 +3,7 @@ name = "felay-gui"
 version = "0.1.0"
 description = "Felay — Feishu CLI Proxy GUI"
 authors = ["zqq"]
-license = "MIT"
+license = "LicenseRef-SEE-LICENSE"
 edition = "2021"
 
 [build-dependencies]

@@ -425,16 +425,22 @@ fn show_main_window(app: &AppHandle) {
 
 /* ── Start daemon from GUI ── */
 
-#[tauri::command]
-fn start_daemon(app: AppHandle) -> Value {
-  // Look for felay-daemon.exe next to the GUI executable
-  let exe_dir = match std::env::current_exe() {
-    Ok(p) => match p.parent() {
-      Some(d) => d.to_path_buf(),
-      None => return serde_json::json!({ "ok": false, "error": "cannot determine exe dir" }),
-    },
-    Err(e) => return serde_json::json!({ "ok": false, "error": e.to_string() }),
+/// Check whether the daemon is currently reachable via IPC.
+fn is_daemon_running() -> bool {
+  let Some(ipc_path) = get_ipc_path() else {
+    return false;
   };
+  request_daemon_status(&ipc_path).is_some()
+}
+
+/// Resolve the path to the daemon executable.
+/// Looks next to the current exe first, then in the Tauri resource directory.
+fn find_daemon_exe(app: &AppHandle) -> Result<PathBuf, String> {
+  let exe_dir = std::env::current_exe()
+    .map_err(|e| e.to_string())?
+    .parent()
+    .ok_or_else(|| "cannot determine exe dir".to_string())?
+    .to_path_buf();
 
   let daemon_name = if cfg!(target_os = "windows") {
     "felay-daemon.exe"
@@ -442,46 +448,101 @@ fn start_daemon(app: AppHandle) -> Value {
     "felay-daemon"
   };
 
-  // Check install directory (next to exe) and resource dir
-  let daemon_exe = exe_dir.join(daemon_name);
-  let daemon_path = if daemon_exe.exists() {
-    daemon_exe
-  } else if let Ok(resource_dir) = app.path().resource_dir() {
-    let p = resource_dir.join(daemon_name);
-    if p.exists() {
-      p
-    } else {
-      return serde_json::json!({ "ok": false, "error": format!("daemon not found: {}", daemon_name) });
-    }
-  } else {
-    return serde_json::json!({ "ok": false, "error": format!("daemon not found: {}", daemon_name) });
-  };
+  // 1. Next to the GUI executable (production install layout)
+  let candidate = exe_dir.join(daemon_name);
+  if candidate.exists() {
+    return Ok(candidate);
+  }
 
+  // 2. Tauri resource directory
+  if let Ok(resource_dir) = app.path().resource_dir() {
+    let candidate = resource_dir.join(daemon_name);
+    if candidate.exists() {
+      return Ok(candidate);
+    }
+  }
+
+  Err(format!("daemon not found: {}", daemon_name))
+}
+
+/// Spawn the daemon process in detached mode.
+fn spawn_daemon(daemon_path: &std::path::Path) -> Result<(), String> {
   #[cfg(target_os = "windows")]
   {
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x00000008;
-    match std::process::Command::new(&daemon_path)
+    std::process::Command::new(daemon_path)
       .creation_flags(DETACHED_PROCESS)
       .spawn()
-    {
-      Ok(_) => serde_json::json!({ "ok": true }),
-      Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
-    }
+      .map_err(|e| e.to_string())?;
   }
 
   #[cfg(not(target_os = "windows"))]
   {
-    match std::process::Command::new(&daemon_path)
+    std::process::Command::new(daemon_path)
       .stdin(std::process::Stdio::null())
       .stdout(std::process::Stdio::null())
       .stderr(std::process::Stdio::null())
       .spawn()
-    {
-      Ok(_) => serde_json::json!({ "ok": true }),
-      Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+      .map_err(|e| e.to_string())?;
+  }
+
+  Ok(())
+}
+
+#[tauri::command]
+fn start_daemon(app: AppHandle) -> Value {
+  // If daemon is already running, return immediately
+  if is_daemon_running() {
+    return serde_json::json!({ "ok": true, "already_running": true });
+  }
+
+  let daemon_path = match find_daemon_exe(&app) {
+    Ok(p) => p,
+    Err(e) => return serde_json::json!({ "ok": false, "error": e }),
+  };
+
+  match spawn_daemon(&daemon_path) {
+    Ok(_) => serde_json::json!({ "ok": true }),
+    Err(e) => serde_json::json!({ "ok": false, "error": e }),
+  }
+}
+
+/// Auto-start the daemon on app launch.
+/// Spawns the daemon if not already running, then waits up to ~6 seconds
+/// for it to become reachable. Runs on a background thread so the UI is
+/// not blocked.
+fn auto_start_daemon(app: &AppHandle) {
+  if is_daemon_running() {
+    println!("[gui] daemon already running, skipping auto-start");
+    return;
+  }
+
+  let daemon_path = match find_daemon_exe(app) {
+    Ok(p) => p,
+    Err(e) => {
+      println!("[gui] auto-start skipped: {}", e);
+      return;
+    }
+  };
+
+  println!("[gui] auto-starting daemon from {:?}", daemon_path);
+
+  if let Err(e) = spawn_daemon(&daemon_path) {
+    println!("[gui] failed to auto-start daemon: {}", e);
+    return;
+  }
+
+  // Wait for the daemon to become reachable (up to ~6 seconds)
+  for _ in 0..20 {
+    thread::sleep(Duration::from_millis(300));
+    if is_daemon_running() {
+      println!("[gui] daemon is now running");
+      return;
     }
   }
+
+  println!("[gui] daemon auto-start: timeout waiting for daemon to become reachable");
 }
 
 /* ── Entry point ── */
@@ -501,6 +562,12 @@ fn main() {
       start_daemon,
     ])
     .setup(|app| {
+      // Auto-start daemon on a background thread so UI is not blocked
+      let app_handle = app.handle().clone();
+      thread::spawn(move || {
+        auto_start_daemon(&app_handle);
+      });
+
       let open = MenuItem::with_id(app, "open", "打开面板", true, None::<&str>)?;
       let sessions_item =
         MenuItem::with_id(app, "sessions", "活跃会话: 0", false, None::<&str>)?;

@@ -76,6 +76,48 @@ felay/
 - **GUI 管理界面**：会话绑定、机器人增删改查、密码可见切换、动态托盘菜单
 - **健康监测**：WSClient 断连检测与警告通知
 
+## CLI 兼容性
+
+Felay 设计为通用 CLI 代理，目前重点支持以下三个 AI CLI 工具：
+
+### 功能支持
+
+| 功能 | Codex | Gemini CLI | Claude Code |
+|------|:-----:|:----------:|:-----------:|
+| 飞书发送文字 → CLI 输入 | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| AI 响应 → 飞书富文本回复 | :white_check_mark: Notify Hook | :white_check_mark: PTY 解析 | :white_check_mark: PTY 解析 |
+| 推送机器人（Webhook 输出推送） | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| 会话结束卡片通知 | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| Markdown → 飞书 Post 富文本渲染 | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+
+> **AI 响应获取方式：**
+> - **Notify Hook**（Codex 专用）：通过 Codex 的 `notify` 钩子直接获取 AI 原始回复文本，无需解析终端输出，响应更干净准确
+> - **PTY 解析**（通用方案）：通过虚拟终端渲染 + 文本提取从 PTY 输出中解析 AI 响应，适用于所有 CLI
+
+### 平台测试状态
+
+| 平台 | Codex | Gemini CLI | Claude Code |
+|------|:-----:|:----------:|:-----------:|
+| Windows | :white_check_mark: 已测试 | :grey_question: 待测试 | :grey_question: 待测试 |
+| macOS | :grey_question: 待测试 | :grey_question: 待测试 | :grey_question: 待测试 |
+| Linux | :grey_question: 待测试 | :grey_question: 待测试 | :grey_question: 待测试 |
+
+### 使用示例
+
+```bash
+felay run codex          # 包装 Codex
+felay run gemini         # 包装 Gemini CLI
+felay run claude         # 包装 Claude Code
+```
+
+### 已知问题
+
+| 问题 | 影响范围 | 严重程度 | 状态 |
+|------|---------|---------|------|
+| 多轮对话 Enter 键偶尔失效 | 仅 Windows，所有 CLI | 中 | 已缓解 |
+
+**Windows ConPTY Bug：** Windows 的 ConPTY 存在已知 Bug（[microsoft/terminal#19674](https://github.com/microsoft/terminal/issues/19674)），TUI 程序在多轮对话中切换控制台模式后，`\r` 可能不再被正确翻译为 Enter 键事件。Felay 通过逐字符模拟输入 + 自动补发 Enter 来缓解此问题，补发次数和间隔可在 GUI 设置中调整。**macOS / Linux 不受此问题影响。**
+
 ## 前置要求
 
 - [Node.js](https://nodejs.org/) >= 18
@@ -192,6 +234,10 @@ felay daemon stop     # 优雅关闭
   "push": {
     "mergeWindow": 2000,
     "maxMessageBytes": 30000
+  },
+  "input": {
+    "enterRetryCount": 2,
+    "enterRetryInterval": 500
   }
 }
 ```
@@ -203,6 +249,8 @@ felay daemon stop     # 优雅关闭
 | `reconnect.backoffMultiplier` | 指数退避倍数 | 2 |
 | `push.mergeWindow` | 推送消息合并窗口（毫秒） | 2000 |
 | `push.maxMessageBytes` | 单条推送消息上限（字节） | 30000 |
+| `input.enterRetryCount` | Enter 自动补发次数（仅 Windows） | 2 |
+| `input.enterRetryInterval` | Enter 补发间隔（毫秒，仅 Windows） | 500 |
 
 ## 数据文件
 
@@ -249,4 +297,4 @@ Daemon 使用 JSON-line 协议通信（每条消息一行 JSON + `\n`）。
 
 ## 许可
 
-MIT
+Custom Source-Available License — 仅限个人非商业使用。详见 [LICENSE](LICENSE)。

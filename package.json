@@ -2,6 +2,7 @@
   "name": "felay",
   "version": "0.1.0",
   "private": true,
+  "license": "SEE LICENSE IN LICENSE",
   "packageManager": "pnpm@10.5.2",
   "scripts": {
     "dev": "pnpm --parallel --filter @felay/daemon --filter @felay/cli dev",
@@ -14,7 +15,8 @@
     "setup": "pnpm install && pnpm run build && cd packages/cli && npm link",
     "uninstall": "cd packages/cli && npm unlink -g @felay/cli",
     "build:gui": "pnpm --filter @felay/shared build && cd packages/gui/src-tauri && cargo tauri build",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "test:ws": "cd packages/daemon && npx tsx ../../scripts/test-ws.ts"
   },
   "devDependencies": {
     "esbuild": "^0.24.0",

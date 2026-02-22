@@ -53,6 +53,7 @@ interface AppConfig {
   bots: { interactive: InteractiveBot[]; push: PushBot[] };
   reconnect: { maxRetries: number; initialInterval: number; backoffMultiplier: number };
   push: { mergeWindow: number; maxMessageBytes: number };
+  input?: { enterRetryCount: number; enterRetryInterval: number };
 }
 
 const tabs: Array<{ key: TabKey; label: string }> = [
@@ -93,6 +94,7 @@ export function App() {
   const [status, setStatus] = useState<GuiStatus>(emptyStatus);
   const [selected, setSelected] = useState("");
   const [bots, setBots] = useState<BotsData>(emptyBots);
+  const [daemonStarting, setDaemonStarting] = useState(false);
 
   const loadBots = useCallback(async () => {
     try {
@@ -101,6 +103,34 @@ export function App() {
     } catch {
       setBots(emptyBots);
     }
+  }, []);
+
+  // Auto-start daemon on first load if not running
+  useEffect(() => {
+    let cancelled = false;
+
+    const tryAutoStart = async () => {
+      try {
+        const currentStatus = await invoke<GuiStatus>("read_daemon_status");
+        if (currentStatus.running) return; // already running
+      } catch {
+        // ignore — daemon not reachable
+      }
+
+      if (cancelled) return;
+      setDaemonStarting(true);
+      try {
+        await invoke("start_daemon");
+      } catch (e) {
+        console.warn("[gui] auto-start daemon failed:", e);
+      }
+      if (!cancelled) setDaemonStarting(false);
+    };
+
+    tryAutoStart();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -204,7 +234,12 @@ export function App() {
       )}
       <footer className="statusbar">
         <span>
-          Daemon: {status.running ? "运行中" : "未运行"}
+          Daemon:{" "}
+          {status.running
+            ? "运行中"
+            : daemonStarting
+              ? "启动中..."
+              : "未运行"}
           {status.daemon_pid ? ` (PID ${status.daemon_pid})` : ""}
         </span>
         <span>会话: {activeSessionCount} 活跃</span>
@@ -810,6 +845,7 @@ const defaultConfig: AppConfig = {
   bots: { interactive: [], push: [] },
   reconnect: { maxRetries: 3, initialInterval: 5, backoffMultiplier: 2 },
   push: { mergeWindow: 2000, maxMessageBytes: 30000 },
+  input: { enterRetryCount: 2, enterRetryInterval: 500 },
 };
 
 /** Clamp a numeric input value to a safe range, returning fallback on NaN. */
@@ -946,6 +982,55 @@ function SettingsView({ daemonRunning }: { daemonRunning: boolean }) {
           }
         />
       </label>
+
+      {/* Windows ConPTY Enter retry — only shown on Windows */}
+      {navigator.platform?.startsWith("Win") && (
+        <>
+          <h4 style={{ marginTop: "1em", marginBottom: "0.2em" }}>
+            Windows 输入兼容 (ConPTY)
+          </h4>
+          <p className="todo" style={{ fontSize: "0.85em" }}>
+            由于 Windows ConPTY 已知 Bug，TUI 程序（如 Codex）在多轮对话中 Enter
+            键可能失效。此设置控制自动补发 Enter 的次数和间隔，以缓解此问题。
+          </p>
+          <label>
+            Enter 补发次数
+            <input
+              type="number"
+              min={0}
+              max={10}
+              value={config.input?.enterRetryCount ?? 2}
+              onChange={(e) =>
+                setConfig({
+                  ...config,
+                  input: {
+                    enterRetryCount: clampNum(e.target.value, 0, 10, 2),
+                    enterRetryInterval: config.input?.enterRetryInterval ?? 500,
+                  },
+                })
+              }
+            />
+          </label>
+          <label>
+            Enter 补发间隔(毫秒)
+            <input
+              type="number"
+              min={100}
+              max={5000}
+              value={config.input?.enterRetryInterval ?? 500}
+              onChange={(e) =>
+                setConfig({
+                  ...config,
+                  input: {
+                    enterRetryCount: config.input?.enterRetryCount ?? 2,
+                    enterRetryInterval: clampNum(e.target.value, 100, 5000, 500),
+                  },
+                })
+              }
+            />
+          </label>
+        </>
+      )}
 
       {message && (
         <p className={message.startsWith("保存成功") ? "msg-ok" : "msg-err"}>{message}</p>

@@ -10,7 +10,15 @@ import {
 import type { SessionRegistry } from "./sessionRegistry.js";
 import type { ConfigManager } from "./configManager.js";
 import type { OutputBuffer } from "./outputBuffer.js";
-import { stripAnsi, filterNoiseLines } from "./sanitizer.js";
+import { stripAnsi, filterNoiseLines, renderTerminalOutput, extractResponseText } from "./sanitizer.js";
+import { markdownToPost, markdownToPostBasic } from "./markdownToPost.js";
+
+/** Check if a CLI command is Codex (supports notify hook for clean replies). */
+function isCodexCli(cli: string): boolean {
+  const base = cli.replace(/\\/g, "/").split("/").pop() || "";
+  const name = base.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
+  return name === "codex";
+}
 
 /* ── Types ── */
 
@@ -19,6 +27,7 @@ interface BotConnection {
   wsClient: Lark.WSClient;
   healthy: boolean;
   lastEventAt: number;
+  connectedAt: number;
   healthCheckTimer?: ReturnType<typeof setInterval>;
   unhealthySince?: number;
 }
@@ -28,17 +37,17 @@ interface PendingReply {
   chatId: string;
 }
 
-/* ── Card builder ── */
+/* ── Card builders ── */
 
-function buildCard(title: string, content: string): string {
-  // Truncate content for card body (Feishu card limit ~30KB)
+/** Card with content inside a code block (for session-ended, structured info). */
+function buildCard(title: string, content: string, template: string = "blue"): string {
   const body = content.length > 28000 ? "...(truncated)\n" + content.slice(-27000) : content;
 
   const card = {
     config: { wide_screen_mode: true },
     header: {
       title: { tag: "plain_text", content: title },
-      template: "blue",
+      template,
     },
     elements: [
       {
@@ -46,6 +55,29 @@ function buildCard(title: string, content: string): string {
         text: {
           tag: "lark_md",
           content: "```\n" + body + "\n```",
+        },
+      },
+    ],
+  };
+  return JSON.stringify(card);
+}
+
+/** Card with lark_md content rendered as markdown (for AI responses, push messages). */
+function buildMarkdownCard(title: string, content: string, template: string = "blue"): string {
+  const body = content.length > 28000 ? "...(truncated)\n" + content.slice(-27000) : content;
+
+  const card = {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: "plain_text", content: title },
+      template,
+    },
+    elements: [
+      {
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content: body,
         },
       },
     ],
@@ -100,6 +132,8 @@ export class FeishuManager {
       const client = new Lark.Client({
         appId: botConfig.appId,
         appSecret: botConfig.appSecret,
+        domain: Lark.Domain.Feishu,
+        appType: Lark.AppType.SelfBuild,
       });
 
       const eventDispatcher = new Lark.EventDispatcher({
@@ -115,17 +149,22 @@ export class FeishuManager {
       const wsClient = new Lark.WSClient({
         appId: botConfig.appId,
         appSecret: botConfig.appSecret,
-        loggerLevel: Lark.LoggerLevel.warn,
+        domain: Lark.Domain.Feishu,
+        // @ts-expect-error — appType exists at runtime but is missing from @larksuiteoapi/node-sdk type declarations
+        appType: Lark.AppType.SelfBuild,
+        loggerLevel: Lark.LoggerLevel.info,
         autoReconnect: true,
       });
 
       await wsClient.start({ eventDispatcher });
 
+      const connectedAt = Date.now();
       const connection: BotConnection = {
         client,
         wsClient,
         healthy: true,
-        lastEventAt: Date.now(),
+        lastEventAt: connectedAt,
+        connectedAt,
       };
 
       // Health check: detect if WSClient has gone silent (likely disconnected)
@@ -221,6 +260,7 @@ export class FeishuManager {
           chat_id?: string;
           message_type?: string;
           content?: string;
+          create_time?: string;
         };
       };
 
@@ -228,10 +268,20 @@ export class FeishuManager {
       const chatId = event.message?.chat_id;
       const messageType = event.message?.message_type;
       const rawContent = event.message?.content;
+      const createTime = event.message?.create_time;
 
       if (!messageId || !chatId || !rawContent) {
         console.log("[felay] ignoring event with missing fields");
         return;
+      }
+
+      // Ignore messages sent before the bot connected (historical/queued messages)
+      if (conn && createTime) {
+        const msgTimestamp = parseInt(createTime, 10);
+        if (msgTimestamp > 0 && msgTimestamp < conn.connectedAt) {
+          console.log(`[felay] ignoring historical message (sent before bot connected)`);
+          return;
+        }
       }
 
       // Only handle text messages
@@ -251,11 +301,11 @@ export class FeishuManager {
 
       if (!text.trim()) return;
 
-      // Add EYES reaction
+      // Add THUMBSUP reaction
       try {
         await client.im.v1.messageReaction.create({
           path: { message_id: messageId },
-          data: { reaction_type: { emoji_type: "EYES" } },
+          data: { reaction_type: { emoji_type: "THUMBSUP" } },
         });
       } catch (err) {
         console.log("[felay] failed to add reaction:", err);
@@ -291,20 +341,26 @@ export class FeishuManager {
         return;
       }
 
+      const inputSettings = this.configManager.getSettings().input;
       const feishuInput: FeishuInputEvent = {
         type: "feishu_input",
         payload: {
           sessionId: session.sessionId,
-          text: text + "\n",
+          text: text + "\r",
           at: new Date().toISOString(),
+          enterRetryCount: inputSettings?.enterRetryCount ?? 2,
+          enterRetryInterval: inputSettings?.enterRetryInterval ?? 500,
         },
       };
       socket.write(toJsonLine(feishuInput));
 
-      // Start collecting output for the reply (only if not already collecting —
-      // avoids overwriting a pending reply and losing the first message's response)
+      // For Codex sessions, replies come via the notify hook (codex_notify),
+      // so we skip OutputBuffer interactive collection entirely.
+      // For other CLIs, use the existing PTY output collection + xterm parsing.
       if (!this.pendingReplies.has(session.sessionId)) {
-        this.outputBuffer.startCollecting(session.sessionId);
+        if (!isCodexCli(session.cli)) {
+          this.outputBuffer.startCollecting(session.sessionId);
+        }
         this.pendingReplies.set(session.sessionId, { messageId, chatId });
       }
 
@@ -334,31 +390,31 @@ export class FeishuManager {
     const conn = this.connections.get(botId);
     if (!conn) return;
 
-    // Clean output
-    const cleaned = filterNoiseLines(stripAnsi(rawOutput));
+    // Render raw PTY output through virtual terminal to get clean screen content
+    const rendered = await renderTerminalOutput(rawOutput);
+    // Extract only meaningful content — strip TUI chrome (menus, status bar, etc.)
+    const cleaned = extractResponseText(rendered);
     if (!cleaned.trim()) return;
-
-    const title = `Reply [${sessionId}] ${session?.cli ?? ""}`;
 
     try {
       await conn.client.im.v1.message.create({
         params: { receive_id_type: "chat_id" },
         data: {
           receive_id: pending.chatId,
-          msg_type: "interactive",
-          content: buildCard(title, cleaned),
+          msg_type: "post",
+          content: JSON.stringify(markdownToPost(cleaned)),
         },
       });
     } catch (err) {
       console.error(`[felay] failed to send reply for session ${sessionId}:`, err);
     }
 
-    // Remove EYES reaction
+    // Remove THUMBSUP reaction
     try {
       // List reactions to find the one we added
       const reactions = await conn.client.im.v1.messageReaction.list({
         path: { message_id: pending.messageId },
-        params: { reaction_type: "EYES" },
+        params: { reaction_type: "THUMBSUP" },
       });
       const myReaction = reactions?.data?.items?.[0];
       if (myReaction?.reaction_id) {
@@ -376,6 +432,105 @@ export class FeishuManager {
     this.pendingReplies.delete(sessionId);
   }
 
+  /* ── Codex notify hook reply (called when codex_notify arrives) ── */
+
+  async handleCodexNotify(sessionId: string, cleanMessage: string): Promise<void> {
+    const text = cleanMessage.trim();
+    if (!text) return;
+
+    const session = this.registry.get(sessionId);
+
+    // 1. Send interactive reply (if there's a pending Feishu message to reply to)
+    const pending = this.pendingReplies.get(sessionId);
+    if (pending) {
+      const botId = session?.interactiveBotId;
+      const conn = botId ? this.connections.get(botId) : undefined;
+
+      if (conn) {
+        try {
+          await conn.client.im.v1.message.create({
+            params: { receive_id_type: "chat_id" },
+            data: {
+              receive_id: pending.chatId,
+              msg_type: "post",
+              content: JSON.stringify(markdownToPost(text)),
+            },
+          });
+        } catch (err) {
+          console.error(`[felay] failed to send codex notify reply for session ${sessionId}:`, err);
+        }
+
+        // Remove THUMBSUP reaction
+        try {
+          const reactions = await conn.client.im.v1.messageReaction.list({
+            path: { message_id: pending.messageId },
+            params: { reaction_type: "THUMBSUP" },
+          });
+          const myReaction = reactions?.data?.items?.[0];
+          if (myReaction?.reaction_id) {
+            await conn.client.im.v1.messageReaction.delete({
+              path: {
+                message_id: pending.messageId,
+                reaction_id: myReaction.reaction_id,
+              },
+            });
+          }
+        } catch {
+          // Reaction cleanup is best-effort
+        }
+      }
+
+      this.pendingReplies.delete(sessionId);
+    }
+
+    // 2. Push to webhook bot (if bound) — clean text, no PTY parsing needed
+    if (session?.pushBotId && session.pushEnabled) {
+      await this.sendPushCleanMessage(sessionId, text);
+    }
+  }
+
+  /** Push a pre-cleaned message via webhook (for Codex notify hook). */
+  private async sendPushCleanMessage(sessionId: string, cleanText: string): Promise<void> {
+    const session = this.registry.get(sessionId);
+    if (!session?.pushBotId || !session.pushEnabled) return;
+
+    const bots = this.configManager.getBots();
+    const botConfig = bots.push.find((b) => b.id === session.pushBotId);
+    if (!botConfig) return;
+
+    if (!FeishuManager.isAllowedWebhookUrl(botConfig.webhook)) {
+      console.error(`[felay] blocked push to untrusted webhook URL: ${botConfig.webhook}`);
+      return;
+    }
+
+    try {
+      const body: Record<string, unknown> = {
+        msg_type: "post",
+        content: { post: markdownToPostBasic(cleanText) },
+      };
+
+      if (botConfig.secret) {
+        const timestamp = Math.floor(Date.now() / 1000).toString();
+        const sign = this.genWebhookSign(timestamp, botConfig.secret);
+        body.timestamp = timestamp;
+        body.sign = sign;
+      }
+
+      const resp = await fetch(botConfig.webhook, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      const result = (await resp.json()) as { code?: number; msg?: string };
+      if (result.code !== 0) {
+        console.error(`[felay] push (codex notify) failed for session ${sessionId}:`, result);
+      }
+    } catch (err) {
+      console.error(`[felay] push (codex notify) error for session ${sessionId}:`, err);
+    }
+  }
+
   /* ── Webhook push (called by OutputBuffer callback) ── */
 
   async sendPushMessage(sessionId: string, rawOutput: string): Promise<void> {
@@ -386,21 +541,23 @@ export class FeishuManager {
     const botConfig = bots.push.find((b) => b.id === session.pushBotId);
     if (!botConfig) return;
 
-    const cleaned = filterNoiseLines(stripAnsi(rawOutput));
+    // Render through virtual terminal for clean output (handles cursor movements, redraws, etc.)
+    const rendered = await renderTerminalOutput(rawOutput);
+    const cleaned = extractResponseText(rendered);
     if (!cleaned.trim()) return;
+
+    // Skip very short output (likely keyboard input echo, not real content)
+    if (cleaned.trim().length < 10) return;
 
     if (!FeishuManager.isAllowedWebhookUrl(botConfig.webhook)) {
       console.error(`[felay] blocked push to untrusted webhook URL: ${botConfig.webhook}`);
       return;
     }
 
-    const title = `Push [${sessionId}] ${session.cli}`;
-    const cardContent = buildCard(title, cleaned);
-
     try {
       const body: Record<string, unknown> = {
-        msg_type: "interactive",
-        card: JSON.parse(cardContent),
+        msg_type: "post",
+        content: { post: markdownToPostBasic(cleaned) },
       };
 
       // Sign if secret is configured
@@ -468,6 +625,8 @@ export class FeishuManager {
       const client = new Lark.Client({
         appId: botConfig.appId,
         appSecret: botConfig.appSecret,
+        domain: Lark.Domain.Feishu,
+        appType: Lark.AppType.SelfBuild,
       });
 
       // Use a lightweight API to verify credentials: get app_access_token
@@ -547,15 +706,21 @@ export class FeishuManager {
       const chatId = this.sessionChatIds.get(sessionId) ?? pending?.chatId;
 
       if (conn && chatId) {
-        // Get task summary from the rolling output buffer
-        const rawSummary = this.outputBuffer.getSummary(sessionId);
-        const summaryText = rawSummary
-          ? filterNoiseLines(stripAnsi(rawSummary)).trim()
-          : "";
+        // Send a clean session-ended notification.
+        // Raw terminal buffer is unreliable for TUI programs (Codex, vim, etc.)
+        // that use cursor movement / screen redraws — stripped output becomes garbled.
+        const duration = session.startedAt
+          ? Math.round((Date.now() - new Date(session.startedAt).getTime()) / 1000)
+          : 0;
+        const durationStr = duration >= 60
+          ? `${Math.floor(duration / 60)}m ${duration % 60}s`
+          : `${duration}s`;
 
-        const cardBody = summaryText
-          ? summaryText
-          : `Session ${sessionId} (${session.cli}) has ended.`;
+        const cardBody = [
+          `CLI: ${session.cli}`,
+          `Session: ${sessionId}`,
+          `Duration: ${durationStr}`,
+        ].join("\n");
 
         try {
           await conn.client.im.v1.message.create({
@@ -563,20 +728,20 @@ export class FeishuManager {
             data: {
               receive_id: chatId,
               msg_type: "interactive",
-              content: buildCard(`Task Summary [${sessionId}]`, cardBody),
+              content: buildCard("⚠ 终端已退出", cardBody, "orange"),
             },
           });
         } catch (err) {
-          console.error(`[felay] failed to send task summary:`, err);
+          console.error(`[felay] failed to send session ended card:`, err);
         }
       }
 
-      // Clean up EYES reaction from last pending message
+      // Clean up THUMBSUP reaction from last pending message
       if (pending?.messageId && conn) {
         try {
           const reactions = await conn.client.im.v1.messageReaction.list({
             path: { message_id: pending.messageId },
-            params: { reaction_type: "EYES" },
+            params: { reaction_type: "THUMBSUP" },
           });
           const myReaction = reactions?.data?.items?.[0];
           if (myReaction?.reaction_id) {

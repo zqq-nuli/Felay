@@ -108,9 +108,34 @@ async function runCli(cli: string, args: string[]): Promise<void> {
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          const parsed = JSON.parse(line) as { type?: string; payload?: { text?: string } };
+          const parsed = JSON.parse(line) as { type?: string; payload?: { text?: string; enterRetryCount?: number; enterRetryInterval?: number } };
           if (parsed.type === "feishu_input" && parsed.payload?.text) {
-            ptyProcess.write(parsed.payload.text);
+            // Simulate character-by-character typing to avoid Codex
+            // PasteBurst detection, then retry Enter a few times.
+            // Workaround for Windows ConPTY bug (microsoft/terminal#19674)
+            // where \r stops being translated to VK_RETURN after TUI apps
+            // switch console modes.
+            const text = parsed.payload.text;
+            const retryCount = parsed.payload?.enterRetryCount ?? 2;
+            const retryInterval = parsed.payload?.enterRetryInterval ?? 500;
+            const chars = [...text];
+            let i = 0;
+            const typeNext = () => {
+              if (i < chars.length) {
+                ptyProcess.write(chars[i]);
+                i++;
+                setTimeout(typeNext, 10);
+              } else {
+                // All chars written (including trailing \r from daemon).
+                // Retry Enter: if first \r was swallowed, retries outside
+                // the burst window will submit. If already submitted,
+                // extra \r are harmlessly ignored in processing mode.
+                for (let r = 1; r <= retryCount; r++) {
+                  setTimeout(() => ptyProcess.write("\r"), retryInterval * r);
+                }
+              }
+            };
+            typeNext();
           }
         } catch {
           // ignore malformed payload

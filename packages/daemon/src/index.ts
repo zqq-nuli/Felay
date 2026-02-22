@@ -1,3 +1,6 @@
+// Node.js/axios 不受 Clash 分流规则控制，需要显式设置 NO_PROXY 绕过系统代理
+process.env.NO_PROXY = "open.feishu.cn,*.feishu.cn,*.larksuite.com";
+
 import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
@@ -14,6 +17,9 @@ import {
   type TestBotResponse,
   type GetConfigResponse,
   type SaveConfigResponse,
+  type SetDefaultBotResponse,
+  type GetDefaultsResponse,
+  type CodexNotifyEvent,
   type DaemonLockFile,
 } from "@felay/shared";
 import { getIpcPath } from "./ipc.js";
@@ -149,10 +155,44 @@ const saveConfigSchema = z.object({
       mergeWindow: z.number(),
       maxMessageBytes: z.number(),
     }),
+    defaults: z.object({
+      defaultInteractiveBotId: z.string().optional(),
+      defaultPushBotId: z.string().optional(),
+    }).optional(),
+    input: z.object({
+      enterRetryCount: z.number(),
+      enterRetryInterval: z.number(),
+    }).optional(),
+  }),
+});
+
+const setDefaultBotSchema = z.object({
+  type: z.literal("set_default_bot_request"),
+  payload: z.object({
+    botType: z.enum(["interactive", "push"]),
+    botId: z.string().nullable(),
+  }),
+});
+
+const getDefaultsSchema = z.object({ type: z.literal("get_defaults_request") });
+
+const codexNotifySchema = z.object({
+  type: z.literal("codex_notify"),
+  payload: z.object({
+    cwd: z.string(),
+    message: z.string(),
+    turnId: z.string(),
+    threadId: z.string(),
   }),
 });
 
 /* ── Helpers ── */
+
+function isCodexSession(cli: string): boolean {
+  const base = cli.replace(/\\/g, "/").split("/").pop() || "";
+  const name = base.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
+  return name === "codex";
+}
 
 function getStateDir(): string {
   return path.join(os.homedir(), ".felay");
@@ -331,6 +371,9 @@ async function handleMessage(
   const register = registerSchema.safeParse(parsed);
   if (register.success) {
     const sid = register.data.payload.sessionId;
+    const existingSession = registry.get(sid);
+    const isNewSession = !existingSession || existingSession.status === "ended";
+
     registry.register({
       sessionId: sid,
       cli: register.data.payload.cli,
@@ -341,6 +384,24 @@ async function handleMessage(
     // M3: track session→socket mapping
     socketMap.set(sid, socket);
     socketSessions.add(sid);
+
+    // Auto-bind default bots for newly registered sessions
+    if (isNewSession) {
+      const defaults = configManager.getDefaults();
+      if (defaults.defaultInteractiveBotId) {
+        const bound = registry.bindInteractiveBot(sid, defaults.defaultInteractiveBotId);
+        if (bound) {
+          void feishuManager.startInteractiveBot(defaults.defaultInteractiveBotId);
+          console.log(`[felay] auto-bound interactive bot ${defaults.defaultInteractiveBotId} to session ${sid}`);
+        }
+      }
+      if (defaults.defaultPushBotId) {
+        const bound = registry.bindPushBot(sid, defaults.defaultPushBotId);
+        if (bound) {
+          console.log(`[felay] auto-bound push bot ${defaults.defaultPushBotId} to session ${sid}`);
+        }
+      }
+    }
     return;
   }
 
@@ -357,7 +418,7 @@ async function handleMessage(
     if (session?.interactiveBotId) {
       outputBuffer.appendChunk(sessionId, chunk);
     }
-    if (session?.pushBotId && session.pushEnabled) {
+    if (session?.pushBotId && session.pushEnabled && !isCodexSession(session.cli)) {
       outputBuffer.appendPushChunk(sessionId, chunk);
     }
     return;
@@ -566,7 +627,12 @@ async function handleMessage(
   const saveConfig = saveConfigSchema.safeParse(parsed);
   if (saveConfig.success) {
     try {
-      await configManager.saveSettings(saveConfig.data.payload);
+      const configPayload = {
+        ...saveConfig.data.payload,
+        defaults: saveConfig.data.payload.defaults ?? configManager.getDefaults(),
+        input: saveConfig.data.payload.input ?? configManager.getSettings().input,
+      };
+      await configManager.saveSettings(configPayload);
       const payload: SaveConfigResponse = {
         type: "save_config_response",
         payload: { ok: true },
@@ -578,6 +644,59 @@ async function handleMessage(
         payload: { ok: false, error: String(err) },
       };
       socket.write(toJsonLine(payload));
+    }
+    return;
+  }
+
+  /* ── Default bot settings ── */
+
+  const setDefaultBot = setDefaultBotSchema.safeParse(parsed);
+  if (setDefaultBot.success) {
+    try {
+      const { botType, botId } = setDefaultBot.data.payload;
+      const ok = await configManager.setDefaultBot(botType, botId);
+      const payload: SetDefaultBotResponse = {
+        type: "set_default_bot_response",
+        payload: { ok, error: ok ? undefined : "bot not found" },
+      };
+      socket.write(toJsonLine(payload));
+    } catch (err) {
+      const payload: SetDefaultBotResponse = {
+        type: "set_default_bot_response",
+        payload: { ok: false, error: String(err) },
+      };
+      socket.write(toJsonLine(payload));
+    }
+    return;
+  }
+
+  const getDefaults = getDefaultsSchema.safeParse(parsed);
+  if (getDefaults.success) {
+    const payload: GetDefaultsResponse = {
+      type: "get_defaults_response",
+      payload: configManager.getDefaults(),
+    };
+    socket.write(toJsonLine(payload));
+    return;
+  }
+
+  /* ── Codex notify hook ── */
+
+  const codexNotify = codexNotifySchema.safeParse(parsed);
+  if (codexNotify.success) {
+    const { cwd, message } = codexNotify.data.payload;
+    // Match cwd to an active session
+    const sessions = registry.list();
+    const session = sessions.find(
+      (s) => s.status !== "ended" && s.cwd === cwd
+    );
+    if (session) {
+      console.log(
+        `[felay] codex notify for session ${session.sessionId}: ${message.slice(0, 80)}...`
+      );
+      void feishuManager.handleCodexNotify(session.sessionId, message);
+    } else {
+      console.log(`[felay] codex notify: no active session for cwd ${cwd}`);
     }
     return;
   }

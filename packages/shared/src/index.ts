@@ -28,6 +28,18 @@ export interface PushSettings {
   maxMessageBytes: number;
 }
 
+export interface InputSettings {
+  /** Number of extra Enter (\r) retries after typing. Default 2. */
+  enterRetryCount: number;
+  /** Interval between Enter retries in ms. Default 500. */
+  enterRetryInterval: number;
+}
+
+export interface DefaultBotSettings {
+  defaultInteractiveBotId?: string;
+  defaultPushBotId?: string;
+}
+
 export interface AppConfig {
   bots: {
     interactive: InteractiveBotConfig[];
@@ -35,12 +47,16 @@ export interface AppConfig {
   };
   reconnect: ReconnectSettings;
   push: PushSettings;
+  defaults: DefaultBotSettings;
+  input: InputSettings;
 }
 
 export const defaultAppConfig: AppConfig = {
   bots: { interactive: [], push: [] },
   reconnect: { maxRetries: 3, initialInterval: 5, backoffMultiplier: 2 },
   push: { mergeWindow: 2000, maxMessageBytes: 30000 },
+  defaults: {},
+  input: { enterRetryCount: 2, enterRetryInterval: 500 },
 };
 
 export interface SessionRegistration {
@@ -71,6 +87,10 @@ export interface FeishuInputEvent {
     sessionId: string;
     text: string;
     at: string;
+    /** Number of extra Enter retries (Windows ConPTY workaround). */
+    enterRetryCount?: number;
+    /** Interval between Enter retries in ms. */
+    enterRetryInterval?: number;
   };
 }
 
@@ -221,6 +241,42 @@ export interface SaveConfigResponse {
   payload: { ok: boolean; error?: string };
 }
 
+/* ── Default bot messages ── */
+
+export interface SetDefaultBotRequest {
+  type: "set_default_bot_request";
+  payload: {
+    botType: BotType;
+    botId: string | null; // null to clear the default
+  };
+}
+
+export interface SetDefaultBotResponse {
+  type: "set_default_bot_response";
+  payload: { ok: boolean; error?: string };
+}
+
+export interface GetDefaultsRequest {
+  type: "get_defaults_request";
+}
+
+export interface GetDefaultsResponse {
+  type: "get_defaults_response";
+  payload: DefaultBotSettings;
+}
+
+/* ── Codex notify hook message ── */
+
+export interface CodexNotifyEvent {
+  type: "codex_notify";
+  payload: {
+    cwd: string;
+    message: string;
+    turnId: string;
+    threadId: string;
+  };
+}
+
 export type DaemonMessage =
   | SessionRegistration
   | PtyOutputEvent
@@ -235,7 +291,10 @@ export type DaemonMessage =
   | UnbindBotRequest
   | TestBotRequest
   | GetConfigRequest
-  | SaveConfigRequest;
+  | SaveConfigRequest
+  | SetDefaultBotRequest
+  | GetDefaultsRequest
+  | CodexNotifyEvent;
 
 export type DaemonReply =
   | StatusResponse
@@ -246,7 +305,9 @@ export type DaemonReply =
   | BindBotResponse
   | TestBotResponse
   | GetConfigResponse
-  | SaveConfigResponse;
+  | SaveConfigResponse
+  | SetDefaultBotResponse
+  | GetDefaultsResponse;
 
 export interface DaemonLockFile {
   pid: number;

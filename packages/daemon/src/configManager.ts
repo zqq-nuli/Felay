@@ -8,6 +8,8 @@ import type {
   BotType,
   ReconnectSettings,
   PushSettings,
+  InputSettings,
+  DefaultBotSettings,
 } from "@felay/shared";
 import { defaultAppConfig } from "@felay/shared";
 import { encrypt, decrypt, isEncrypted } from "./secretStore.js";
@@ -31,6 +33,8 @@ export class ConfigManager {
         }),
         reconnect: { ...defaultAppConfig.reconnect, ...parsed.reconnect },
         push: { ...defaultAppConfig.push, ...parsed.push },
+        defaults: { ...defaultAppConfig.defaults, ...parsed.defaults },
+        input: { ...defaultAppConfig.input, ...parsed.input },
       };
     } catch {
       // File doesn't exist or is invalid – use defaults
@@ -117,21 +121,62 @@ export class ConfigManager {
       const before = this.config.bots.interactive.length;
       this.config.bots.interactive = this.config.bots.interactive.filter((b) => b.id !== botId);
       if (this.config.bots.interactive.length === before) return false;
+      // Clear default if the deleted bot was the default
+      if (this.config.defaults.defaultInteractiveBotId === botId) {
+        this.config.defaults.defaultInteractiveBotId = undefined;
+      }
     } else {
       const before = this.config.bots.push.length;
       this.config.bots.push = this.config.bots.push.filter((b) => b.id !== botId);
       if (this.config.bots.push.length === before) return false;
+      // Clear default if the deleted bot was the default
+      if (this.config.defaults.defaultPushBotId === botId) {
+        this.config.defaults.defaultPushBotId = undefined;
+      }
     }
     await this.save();
     return true;
   }
 
-  getSettings(): { reconnect: ReconnectSettings; push: PushSettings } {
-    return { reconnect: this.config.reconnect, push: this.config.push };
+  getSettings(): { reconnect: ReconnectSettings; push: PushSettings; input: InputSettings } {
+    return {
+      reconnect: this.config.reconnect,
+      push: this.config.push,
+      input: this.config.input ?? { enterRetryCount: 2, enterRetryInterval: 500 },
+    };
   }
 
   async saveSettings(config: AppConfig): Promise<void> {
-    this.config = config;
+    // Preserve existing defaults if not provided (backward compatibility)
+    this.config = {
+      ...config,
+      defaults: config.defaults ?? this.config.defaults,
+    };
     await this.save();
+  }
+
+  /* ── Default bot helpers ── */
+
+  getDefaults(): DefaultBotSettings {
+    return this.config.defaults;
+  }
+
+  async setDefaultBot(botType: BotType, botId: string | null): Promise<boolean> {
+    if (botType === "interactive") {
+      if (botId !== null) {
+        // Verify the bot exists
+        const exists = this.config.bots.interactive.some((b) => b.id === botId);
+        if (!exists) return false;
+      }
+      this.config.defaults.defaultInteractiveBotId = botId ?? undefined;
+    } else {
+      if (botId !== null) {
+        const exists = this.config.bots.push.some((b) => b.id === botId);
+        if (!exists) return false;
+      }
+      this.config.defaults.defaultPushBotId = botId ?? undefined;
+    }
+    await this.save();
+    return true;
   }
 }
