@@ -33,12 +33,14 @@ function resolveWindowsCli(cli: string): string {
     return cli;
   }
 
-  const first = lookup.stdout
+  const lines = lookup.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .find((line) => line.length > 0);
+    .filter((line) => line.length > 0);
 
-  return first || cli;
+  // Prefer .cmd/.exe over extensionless POSIX shell scripts
+  const preferred = lines.find((l) => /\.(cmd|exe|bat)$/i.test(l));
+  return preferred || lines[0] || cli;
 }
 
 async function runCli(cli: string, args: string[]): Promise<void> {
