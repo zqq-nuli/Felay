@@ -7,7 +7,7 @@
     "dev": "pnpm --parallel --filter @felay/daemon --filter @felay/cli dev",
     "dev:daemon": "pnpm --filter @felay/daemon dev",
     "dev:cli": "pnpm --filter @felay/cli dev",
-    "dev:gui": "pnpm --filter @felay/gui dev",
+    "dev:gui": "pnpm --filter @felay/shared build && cd packages/gui/src-tauri && cargo tauri dev",
     "build": "pnpm -r build",
     "build:binaries": "node scripts/build-binaries.mjs",
     "build:all": "pnpm run build && node scripts/build-binaries.mjs",
