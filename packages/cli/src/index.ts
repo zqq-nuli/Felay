@@ -48,9 +48,20 @@ async function runCli(cli: string, args: string[]): Promise<void> {
 
   await ensureDaemonRunning();
 
-  const resolvedCli = resolveWindowsCli(cli);
+  let resolvedCli = resolveWindowsCli(cli);
+  let spawnArgs = args;
 
-  const ptyProcess = pty.spawn(resolvedCli, args, {
+  // On Windows, .cmd/.bat files cannot be executed directly by node-pty;
+  // they must be launched through cmd.exe /c
+  if (
+    process.platform === "win32" &&
+    /\.(cmd|bat)$/i.test(resolvedCli)
+  ) {
+    spawnArgs = ["/c", resolvedCli, ...args];
+    resolvedCli = "cmd.exe";
+  }
+
+  const ptyProcess = pty.spawn(resolvedCli, spawnArgs, {
     name: "xterm-color",
     cols: process.stdout.columns || 120,
     rows: process.stdout.rows || 30,
