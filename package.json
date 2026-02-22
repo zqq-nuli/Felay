@@ -1,0 +1,14 @@
+{
+  "name": "feishu-cli",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.5.2",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @feishu-cli/daemon --filter @feishu-cli/cli dev",
+    "dev:daemon": "pnpm --filter @feishu-cli/daemon dev",
+    "dev:cli": "pnpm --filter @feishu-cli/cli dev",
+    "dev:gui": "pnpm --filter @feishu-cli/gui dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck"
+  }
+}

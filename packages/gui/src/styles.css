@@ -1,0 +1,379 @@
+:root {
+  color-scheme: light;
+  font-family: "JetBrains Mono", "Microsoft YaHei", monospace;
+  background: radial-gradient(circle at 10% 10%, #f6f7ff, #eceff5 45%, #dfe3eb);
+  color: #202734;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.window {
+  width: 100%;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.titlebar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid #c9d2df;
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(10px);
+}
+
+.body {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  flex: 1;
+  min-height: 0;
+}
+
+.sidebar {
+  border-right: 1px solid #c9d2df;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tab {
+  border: 1px solid #b8c2d0;
+  background: #f5f8fd;
+  border-radius: 8px;
+  padding: 8px;
+  cursor: pointer;
+}
+
+.tab.active {
+  background: #d9ecff;
+  border-color: #5a89c7;
+}
+
+.panel {
+  padding: 12px;
+  overflow: auto;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: 170px 1fr;
+  gap: 12px;
+}
+
+.list,
+.detail,
+.card {
+  border: 1px solid #c8d2df;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 10px;
+}
+
+.session {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #c8d2df;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 8px;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+
+.session.active {
+  background: #e5f2ff;
+  border-color: #5a89c7;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+input,
+select {
+  border: 1px solid #b8c2d0;
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: #ffffff;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+select {
+  cursor: pointer;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.actions button {
+  border: 1px solid #aeb8c8;
+  border-radius: 8px;
+  background: #f4f6fb;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.actions button:hover {
+  background: #e8ecf4;
+}
+
+.actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.todo {
+  color: #7d4a00;
+  background: #fff7db;
+  border: 1px solid #efd37a;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+/* ── Muted text ── */
+
+.muted {
+  color: #7a8596;
+  font-size: 12px;
+}
+
+/* ── Bot cards ── */
+
+.bot-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border: 1px solid #c8d2df;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 10px 12px;
+}
+
+.bot-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bot-card-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.bot-card-actions button {
+  border: 1px solid #aeb8c8;
+  border-radius: 8px;
+  background: #f4f6fb;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.bot-card-actions button:hover {
+  background: #e8ecf4;
+}
+
+/* ── Danger button ── */
+
+.btn-danger {
+  border-color: #e06060 !important;
+  color: #c23030;
+  background: #fff0f0 !important;
+}
+
+.btn-danger:hover {
+  background: #ffe0e0 !important;
+}
+
+.btn-danger-text {
+  border: 1px solid #aeb8c8;
+  border-radius: 8px;
+  background: transparent;
+  padding: 4px 8px;
+  cursor: pointer;
+  color: #c23030;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.btn-danger-text:hover {
+  background: #fff0f0;
+}
+
+/* ── Modal / Overlay ── */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal {
+  background: #f6f7ff;
+  border: 1px solid #c8d2df;
+  border-radius: 14px;
+  padding: 20px 24px;
+  min-width: 340px;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+}
+
+.modal h3 {
+  margin: 0 0 4px;
+}
+
+/* ── Binding section in session detail ── */
+
+.binding-section {
+  margin: 6px 0;
+}
+
+.binding-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.binding-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+.binding-row button {
+  border: 1px solid #aeb8c8;
+  border-radius: 8px;
+  background: #f4f6fb;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.binding-row button:hover {
+  background: #e8ecf4;
+}
+
+/* ── Status messages ── */
+
+.msg-ok {
+  color: #1a7a3a;
+  background: #e6f9ed;
+  border: 1px solid #a3dbb5;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.msg-err {
+  color: #c23030;
+  background: #fff0f0;
+  border: 1px solid #e8a0a0;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+/* ── Password field with toggle ── */
+
+.password-field {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.password-field input {
+  flex: 1;
+  padding-right: 32px;
+}
+
+.toggle-visibility {
+  position: absolute;
+  right: 4px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 14px;
+  opacity: 0.5;
+  line-height: 1;
+}
+
+.toggle-visibility:hover {
+  opacity: 1;
+}
+
+/* ── Warning bar ── */
+
+.warning-bar {
+  display: flex;
+  gap: 12px;
+  padding: 6px 14px;
+  background: #fff7db;
+  border-top: 1px solid #efd37a;
+  font-size: 12px;
+  color: #7d4a00;
+}
+
+/* ── Status bar ── */
+
+.statusbar {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 14px;
+  border-top: 1px solid #c9d2df;
+  background: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+  color: #7a8596;
+}
+
+/* ── Responsive ── */
+
+@media (max-width: 780px) {
+  .body {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    flex-direction: row;
+    border-right: none;
+    border-bottom: 1px solid #c9d2df;
+  }
+
+  .split {
+    grid-template-columns: 1fr;
+  }
+}
