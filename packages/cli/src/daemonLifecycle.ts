@@ -6,7 +6,19 @@ import { readLockFile, daemonStatus } from "./daemonClient.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const workspaceRoot = path.resolve(__dirname, "../../../");
+
+function isPkg(): boolean {
+  return !!(process as any).pkg;
+}
+
+function getWorkspaceRoot(): string {
+  let dir = __dirname;
+  for (let i = 0; i < 10; i++) {
+    if (fs.existsSync(path.join(dir, "pnpm-workspace.yaml"))) return dir;
+    dir = path.dirname(dir);
+  }
+  return path.resolve(__dirname, "../../../");
+}
 
 function isPidAlive(pid: number): boolean {
   try {
@@ -40,22 +52,40 @@ export async function getLiveDaemonIpc(): Promise<string | null> {
 export async function ensureDaemonRunning(): Promise<void> {
   if (await isDaemonReachable()) return;
 
-  const daemonEntry = path.resolve(workspaceRoot, "packages/daemon/src/index.ts");
-  if (!fs.existsSync(daemonEntry)) {
-    throw new Error("daemon entry not found");
-  }
+  let child: ChildProcess;
 
-  const child: ChildProcess = spawn(
-    "pnpm",
-    ["--filter", "@felay/daemon", "dev"],
-    {
+  if (isPkg()) {
+    // Production: spawn standalone daemon executable next to CLI exe
+    const execDir = path.dirname(process.execPath);
+    const daemonExe =
+      process.platform === "win32" ? "felay-daemon.exe" : "felay-daemon";
+    const daemonPath = path.join(execDir, daemonExe);
+    if (!fs.existsSync(daemonPath)) {
+      throw new Error(`daemon executable not found: ${daemonPath}`);
+    }
+    child = spawn(daemonPath, [], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+  } else {
+    // Development: use pnpm to run daemon from workspace
+    const workspaceRoot = getWorkspaceRoot();
+    const daemonEntry = path.resolve(
+      workspaceRoot,
+      "packages/daemon/src/index.ts"
+    );
+    if (!fs.existsSync(daemonEntry)) {
+      throw new Error("daemon entry not found");
+    }
+    child = spawn("pnpm", ["--filter", "@felay/daemon", "dev"], {
       cwd: workspaceRoot,
       shell: process.platform === "win32",
       detached: true,
       stdio: "ignore",
       windowsHide: true,
-    }
-  );
+    });
+  }
 
   child.unref();
 
