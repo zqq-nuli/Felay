@@ -167,39 +167,43 @@ export class FeishuManager {
         connectedAt,
       };
 
-      // Health check: detect if WSClient has gone silent (likely disconnected)
-      const reconnectSettings = this.configManager.getSettings().reconnect;
-      const maxUnhealthyMs =
-        reconnectSettings.maxRetries *
-        reconnectSettings.initialInterval *
-        1000 *
-        Math.pow(
-          reconnectSettings.backoffMultiplier,
-          reconnectSettings.maxRetries - 1
-        );
-
-      connection.healthCheckTimer = setInterval(() => {
-        const silenceMs = Date.now() - connection.lastEventAt;
-        // WSClient should have periodic activity; 90s silence suggests disconnection
-        if (silenceMs > 90_000) {
+      // Health check: try sending a lightweight API request to verify the bot
+      // credentials and connectivity are still valid.  We no longer rely on
+      // message-silence heuristics (90 s) because idle periods without user
+      // messages are perfectly normal and caused false "disconnected" warnings.
+      //
+      // The WSClient has `autoReconnect: true`, so the SDK handles WebSocket
+      // reconnection internally.  Our health-check only verifies that the
+      // Feishu API is reachable and the bot's access token is still valid.
+      connection.healthCheckTimer = setInterval(async () => {
+        try {
+          // A lightweight API call — get bot info (tiny payload).
+          const resp = await client.request({
+            method: "GET",
+            url: "https://open.feishu.cn/open-apis/bot/v3/info",
+          });
+          const body = resp as { code?: number };
+          if (body.code === 0) {
+            if (!connection.healthy) {
+              console.log(`[felay] bot ${botId} reconnected`);
+            }
+            connection.healthy = true;
+            connection.unhealthySince = undefined;
+          } else {
+            if (connection.healthy) {
+              connection.healthy = false;
+              connection.unhealthySince = Date.now();
+              console.log(`[felay] bot ${botId} health-check failed: code=${body.code}`);
+            }
+          }
+        } catch {
           if (connection.healthy) {
             connection.healthy = false;
             connection.unhealthySince = Date.now();
-            console.log(`[felay] bot ${botId} appears disconnected`);
-          } else if (
-            connection.unhealthySince &&
-            Date.now() - connection.unhealthySince > maxUnhealthyMs
-          ) {
-            console.error(`[felay] bot ${botId} reconnection likely exhausted`);
+            console.log(`[felay] bot ${botId} health-check error, marking unhealthy`);
           }
-        } else {
-          if (!connection.healthy) {
-            console.log(`[felay] bot ${botId} reconnected`);
-          }
-          connection.healthy = true;
-          connection.unhealthySince = undefined;
         }
-      }, 30_000);
+      }, 120_000); // Check every 2 minutes (instead of every 30s)
 
       this.connections.set(botId, connection);
       console.log(`[felay] bot ${botId} (${botConfig.name}) WSClient connected`);
