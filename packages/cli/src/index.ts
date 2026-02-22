@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { program } from "commander";
 import pty from "node-pty";
 import net from "node:net";

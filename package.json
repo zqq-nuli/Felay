@@ -9,6 +9,8 @@
     "dev:cli": "pnpm --filter @felay/cli dev",
     "dev:gui": "pnpm --filter @felay/gui dev",
     "build": "pnpm -r build",
+    "setup": "pnpm install && pnpm build && pnpm --filter @felay/cli exec pnpm link --global",
+    "build:gui": "cd packages/gui/src-tauri && cargo tauri build",
     "typecheck": "pnpm -r typecheck"
   }
 }

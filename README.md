@@ -84,8 +84,29 @@ felay/
 
 ## 安装
 
+### 从源码安装（CLI + Daemon）
+
 ```bash
-pnpm install
+git clone https://github.com/zqq-nuli/Felay.git
+cd Felay
+pnpm setup    # 安装依赖 + 编译 + 全局注册 felay 命令
+```
+
+验证安装成功：
+
+```bash
+felay --help
+# 应显示 "Felay — Feishu CLI Proxy" 帮助信息
+```
+
+### 构建 GUI 桌面应用
+
+> 需要 [Rust](https://www.rust-lang.org/tools/install) 环境。
+
+```bash
+pnpm build:gui
+# 安装包输出在 packages/gui/src-tauri/target/release/bundle/
+# Windows: nsis/ 目录下有 .exe 安装程序
 ```
 
 ## 开发
@@ -109,6 +130,10 @@ pnpm dev:gui
 ```bash
 pnpm typecheck
 ```
+
+## 测试
+
+详见 [TESTING.md](./TESTING.md) 中的手动测试指南，覆盖所有核心功能场景。
 
 ## 使用方式
 
