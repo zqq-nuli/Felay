@@ -20,8 +20,8 @@
     }
   },
   "build": {
-    "beforeDevCommand": "pnpm --dir .. dev",
-    "beforeBuildCommand": "pnpm --dir .. build",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420"
   },

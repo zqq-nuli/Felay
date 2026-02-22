@@ -89,7 +89,7 @@ felay/
 ```bash
 git clone https://github.com/zqq-nuli/Felay.git
 cd Felay
-pnpm setup    # 安装依赖 + 编译 + 全局注册 felay 命令
+pnpm run setup    # 安装依赖 + 编译 + 全局注册 felay 命令
 ```
 
 验证安装成功：
@@ -104,9 +104,20 @@ felay --help
 > 需要 [Rust](https://www.rust-lang.org/tools/install) 环境。
 
 ```bash
-pnpm build:gui
+pnpm run build:gui
 # 安装包输出在 packages/gui/src-tauri/target/release/bundle/
 # Windows: nsis/ 目录下有 .exe 安装程序
+```
+
+### 卸载
+
+```bash
+# 移除全局 felay 命令
+pnpm run uninstall
+
+# 清理配置文件（可选）
+# Windows: rmdir /s %USERPROFILE%\.felay
+# macOS/Linux: rm -rf ~/.felay
 ```
 
 ## 开发

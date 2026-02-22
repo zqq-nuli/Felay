@@ -9,8 +9,9 @@
     "dev:cli": "pnpm --filter @felay/cli dev",
     "dev:gui": "pnpm --filter @felay/gui dev",
     "build": "pnpm -r build",
-    "setup": "pnpm install && pnpm build && pnpm --filter @felay/cli exec pnpm link --global",
-    "build:gui": "cd packages/gui/src-tauri && cargo tauri build",
+    "setup": "pnpm install && pnpm run build && cd packages/cli && npm link",
+    "uninstall": "cd packages/cli && npm unlink -g @felay/cli",
+    "build:gui": "pnpm --filter @felay/shared build && cd packages/gui/src-tauri && cargo tauri build",
     "typecheck": "pnpm -r typecheck"
   }
 }

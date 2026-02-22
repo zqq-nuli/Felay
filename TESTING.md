@@ -9,7 +9,7 @@
 ```bash
 git clone https://github.com/zqq-nuli/Felay.git
 cd Felay
-pnpm setup    # 安装依赖 + 编译 + 全局注册 felay 命令
+pnpm run setup    # 安装依赖 + 编译 + 全局注册 felay 命令
 ```
 
 验证安装成功：
