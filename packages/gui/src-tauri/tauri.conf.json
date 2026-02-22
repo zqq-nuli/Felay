@@ -13,9 +13,15 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
+    "resources": {
+      "../../../build/felay.exe": "./",
+      "../../../build/felay-daemon.exe": "./",
+      "../../../build/prebuilds/**/*": "prebuilds/"
+    },
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerHooks": "nsis/hooks.nsi"
       }
     }
   },

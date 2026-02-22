@@ -423,6 +423,67 @@ fn show_main_window(app: &AppHandle) {
   }
 }
 
+/* ── Start daemon from GUI ── */
+
+#[tauri::command]
+fn start_daemon(app: AppHandle) -> Value {
+  // Look for felay-daemon.exe next to the GUI executable
+  let exe_dir = match std::env::current_exe() {
+    Ok(p) => match p.parent() {
+      Some(d) => d.to_path_buf(),
+      None => return serde_json::json!({ "ok": false, "error": "cannot determine exe dir" }),
+    },
+    Err(e) => return serde_json::json!({ "ok": false, "error": e.to_string() }),
+  };
+
+  let daemon_name = if cfg!(target_os = "windows") {
+    "felay-daemon.exe"
+  } else {
+    "felay-daemon"
+  };
+
+  // Check install directory (next to exe) and resource dir
+  let daemon_exe = exe_dir.join(daemon_name);
+  let daemon_path = if daemon_exe.exists() {
+    daemon_exe
+  } else if let Ok(resource_dir) = app.path().resource_dir() {
+    let p = resource_dir.join(daemon_name);
+    if p.exists() {
+      p
+    } else {
+      return serde_json::json!({ "ok": false, "error": format!("daemon not found: {}", daemon_name) });
+    }
+  } else {
+    return serde_json::json!({ "ok": false, "error": format!("daemon not found: {}", daemon_name) });
+  };
+
+  #[cfg(target_os = "windows")]
+  {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x00000008;
+    match std::process::Command::new(&daemon_path)
+      .creation_flags(DETACHED_PROCESS)
+      .spawn()
+    {
+      Ok(_) => serde_json::json!({ "ok": true }),
+      Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    }
+  }
+
+  #[cfg(not(target_os = "windows"))]
+  {
+    match std::process::Command::new(&daemon_path)
+      .stdin(std::process::Stdio::null())
+      .stdout(std::process::Stdio::null())
+      .stderr(std::process::Stdio::null())
+      .spawn()
+    {
+      Ok(_) => serde_json::json!({ "ok": true }),
+      Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    }
+  }
+}
+
 /* ── Entry point ── */
 
 fn main() {
@@ -437,6 +498,7 @@ fn main() {
       test_bot,
       get_config,
       save_config,
+      start_daemon,
     ])
     .setup(|app| {
       let open = MenuItem::with_id(app, "open", "打开面板", true, None::<&str>)?;
