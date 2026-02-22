@@ -11,8 +11,9 @@ import {
   type PtyOutputEvent,
   type SessionEndedEvent,
 } from "@felay/shared";
-import { connectDaemon, daemonStatus, daemonStop } from "./daemonClient.js";
+import { connectDaemon, requestDaemon, daemonStatus, daemonStop } from "./daemonClient.js";
 import { ensureDaemonRunning, getLiveDaemonIpc } from "./daemonLifecycle.js";
+import type { CheckCodexConfigResponse, SetupCodexConfigResponse, CheckClaudeConfigResponse, SetupClaudeConfigResponse } from "@felay/shared";
 
 function resolveWindowsCli(cli: string): string {
   if (process.platform !== "win32") {
@@ -43,12 +44,71 @@ function resolveWindowsCli(cli: string): string {
   return preferred || lines[0] || cli;
 }
 
+function isCodexCli(cli: string): boolean {
+  const base = cli.replace(/\\/g, "/").split("/").pop() || "";
+  const name = base.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
+  return name === "codex";
+}
+
+function isClaudeCli(cli: string): boolean {
+  const base = cli.replace(/\\/g, "/").split("/").pop() || "";
+  const name = base.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
+  return name === "claude";
+}
+
+async function ensureCodexNotifyHook(): Promise<void> {
+  try {
+    const check = await requestDaemon<CheckCodexConfigResponse>({ type: "check_codex_config_request" });
+    if (!check.payload.codexInstalled || check.payload.notifyConfigured) return;
+
+    const setup = await requestDaemon<SetupCodexConfigResponse>({ type: "setup_codex_config_request" });
+    if (setup.payload.ok) {
+      process.stderr.write("[felay] Codex notify hook 已自动配置\n");
+    } else {
+      process.stderr.write(
+        `[felay] Codex notify hook 配置失败: ${setup.payload.error ?? "unknown"}\n` +
+        "[felay] 飞书将无法接收 Codex 的 AI 回复。请在 ~/.codex/config.toml 中手动添加:\n" +
+        `[felay]   notify = ["node", "${check.payload.felayScriptPath}"]\n`
+      );
+    }
+  } catch {
+    // Daemon not reachable — skip silently, main connection will handle it
+  }
+}
+
+async function ensureClaudeHook(): Promise<void> {
+  try {
+    const check = await requestDaemon<CheckClaudeConfigResponse>({ type: "check_claude_config_request" });
+    if (!check.payload.claudeInstalled || check.payload.hookConfigured) return;
+
+    const setup = await requestDaemon<SetupClaudeConfigResponse>({ type: "setup_claude_config_request" });
+    if (setup.payload.ok) {
+      process.stderr.write("[felay] Claude Code Stop hook 已自动配置\n");
+    } else {
+      process.stderr.write(
+        `[felay] Claude Code hook 配置失败: ${setup.payload.error ?? "unknown"}\n` +
+        "[felay] 飞书将无法接收 Claude Code 的 AI 回复。请在 ~/.claude/settings.json 中手动添加 hooks 配置\n"
+      );
+    }
+  } catch {
+    // Daemon not reachable — skip silently
+  }
+}
+
 async function runCli(cli: string, args: string[]): Promise<void> {
   const sessionId = nanoid(10);
   const cwd = process.cwd();
   const startedAt = new Date().toISOString();
 
   await ensureDaemonRunning();
+
+  // Auto-configure CLI-specific hooks
+  if (isCodexCli(cli)) {
+    await ensureCodexNotifyHook();
+  }
+  if (isClaudeCli(cli)) {
+    await ensureClaudeHook();
+  }
 
   let resolvedCli = resolveWindowsCli(cli);
   let spawnArgs = args;

@@ -20,6 +20,11 @@ import {
   type SetDefaultBotResponse,
   type GetDefaultsResponse,
   type CodexNotifyEvent,
+  type CheckCodexConfigResponse,
+  type SetupCodexConfigResponse,
+  type ClaudeNotifyEvent,
+  type CheckClaudeConfigResponse,
+  type SetupClaudeConfigResponse,
   type DaemonLockFile,
 } from "@felay/shared";
 import { getIpcPath } from "./ipc.js";
@@ -27,6 +32,8 @@ import { SessionRegistry } from "./sessionRegistry.js";
 import { ConfigManager } from "./configManager.js";
 import { OutputBuffer } from "./outputBuffer.js";
 import { FeishuManager } from "./feishuManager.js";
+import { checkCodexConfig, setupCodexConfig } from "./codexConfig.js";
+import { checkClaudeConfig, setupClaudeConfig } from "./claudeConfig.js";
 
 /* ── Zod schemas ── */
 
@@ -186,12 +193,38 @@ const codexNotifySchema = z.object({
   }),
 });
 
+const checkCodexConfigSchema = z.object({ type: z.literal("check_codex_config_request") });
+const setupCodexConfigSchema = z.object({ type: z.literal("setup_codex_config_request") });
+
+const claudeNotifySchema = z.object({
+  type: z.literal("claude_notify"),
+  payload: z.object({
+    cwd: z.string(),
+    message: z.string(),
+    sessionId: z.string(),
+  }),
+});
+
+const checkClaudeConfigSchema = z.object({ type: z.literal("check_claude_config_request") });
+const setupClaudeConfigSchema = z.object({ type: z.literal("setup_claude_config_request") });
+
 /* ── Helpers ── */
 
 function isCodexSession(cli: string): boolean {
   const base = cli.replace(/\\/g, "/").split("/").pop() || "";
   const name = base.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
   return name === "codex";
+}
+
+function isClaudeSession(cli: string): boolean {
+  const base = cli.replace(/\\/g, "/").split("/").pop() || "";
+  const name = base.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
+  return name === "claude";
+}
+
+/** Sessions using hook-based notify (bypass PTY output parsing). */
+function isHookSession(cli: string): boolean {
+  return isCodexSession(cli) || isClaudeSession(cli);
 }
 
 function getStateDir(): string {
@@ -413,12 +446,12 @@ async function handleMessage(
     // Always feed summary buffer (for task summary on session end)
     outputBuffer.appendSummaryChunk(sessionId, chunk);
 
-    // M3: feed output to buffers
+    // M3: feed output to buffers (skip hook-based sessions — they send clean text via notify)
     const session = registry.get(sessionId);
-    if (session?.interactiveBotId) {
+    if (session?.interactiveBotId && !isHookSession(session.cli)) {
       outputBuffer.appendChunk(sessionId, chunk);
     }
-    if (session?.pushBotId && session.pushEnabled && !isCodexSession(session.cli)) {
+    if (session?.pushBotId && session.pushEnabled && !isHookSession(session.cli)) {
       outputBuffer.appendPushChunk(sessionId, chunk);
     }
     return;
@@ -680,6 +713,29 @@ async function handleMessage(
     return;
   }
 
+  /* ── Codex config check/setup ── */
+
+  const checkCodex = checkCodexConfigSchema.safeParse(parsed);
+  if (checkCodex.success) {
+    const payload: CheckCodexConfigResponse = {
+      type: "check_codex_config_response",
+      payload: checkCodexConfig(),
+    };
+    socket.write(toJsonLine(payload));
+    return;
+  }
+
+  const setupCodex = setupCodexConfigSchema.safeParse(parsed);
+  if (setupCodex.success) {
+    const result = setupCodexConfig();
+    const payload: SetupCodexConfigResponse = {
+      type: "setup_codex_config_response",
+      payload: result,
+    };
+    socket.write(toJsonLine(payload));
+    return;
+  }
+
   /* ── Codex notify hook ── */
 
   const codexNotify = codexNotifySchema.safeParse(parsed);
@@ -698,6 +754,51 @@ async function handleMessage(
     } else {
       console.log(`[felay] codex notify: no active session for cwd ${cwd}`);
     }
+    return;
+  }
+
+  /* ── Claude Code notify hook ── */
+
+  const claudeNotify = claudeNotifySchema.safeParse(parsed);
+  if (claudeNotify.success) {
+    const { cwd, message } = claudeNotify.data.payload;
+    // Match cwd to an active session (same strategy as codex)
+    const sessions = registry.list();
+    const session = sessions.find(
+      (s) => s.status !== "ended" && s.cwd === cwd
+    );
+    if (session) {
+      console.log(
+        `[felay] claude notify for session ${session.sessionId}: ${message.slice(0, 80)}...`
+      );
+      // Reuse the same feishu send path as codex notify
+      void feishuManager.handleCodexNotify(session.sessionId, message);
+    } else {
+      console.log(`[felay] claude notify: no active session for cwd ${cwd}`);
+    }
+    return;
+  }
+
+  /* ── Claude Code config check/setup ── */
+
+  const checkClaude = checkClaudeConfigSchema.safeParse(parsed);
+  if (checkClaude.success) {
+    const payload: CheckClaudeConfigResponse = {
+      type: "check_claude_config_response",
+      payload: checkClaudeConfig(),
+    };
+    socket.write(toJsonLine(payload));
+    return;
+  }
+
+  const setupClaude = setupClaudeConfigSchema.safeParse(parsed);
+  if (setupClaude.success) {
+    const result = setupClaudeConfig();
+    const payload: SetupClaudeConfigResponse = {
+      type: "setup_claude_config_response",
+      payload: result,
+    };
+    socket.write(toJsonLine(payload));
     return;
   }
 }

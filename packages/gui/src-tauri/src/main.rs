@@ -508,6 +508,153 @@ fn start_daemon(app: AppHandle) -> Value {
   }
 }
 
+#[tauri::command]
+fn check_codex_config() -> Value {
+  let Some(ipc_path) = get_ipc_path() else {
+    return serde_json::json!(null);
+  };
+
+  let req = r#"{"type":"check_codex_config_request"}"#;
+  if let Some(value) = ipc_request(&ipc_path, req) {
+    if let Some(payload) = value.get("payload") {
+      return payload.clone();
+    }
+  }
+  serde_json::json!(null)
+}
+
+#[tauri::command]
+fn open_codex_config_file() -> Value {
+  let Some(home) = get_home_dir() else {
+    return serde_json::json!({ "ok": false, "error": "cannot determine home directory" });
+  };
+  let config_path = PathBuf::from(&home).join(".codex").join("config.toml");
+
+  if !config_path.exists() {
+    // Create the file so the user can edit it
+    let codex_dir = PathBuf::from(&home).join(".codex");
+    if !codex_dir.exists() {
+      return serde_json::json!({ "ok": false, "error": "~/.codex/ 目录不存在，请先安装 Codex" });
+    }
+    if let Err(e) = fs::write(&config_path, "") {
+      return serde_json::json!({ "ok": false, "error": format!("无法创建 config.toml: {}", e) });
+    }
+  }
+
+  let result = {
+    #[cfg(target_os = "windows")]
+    {
+      std::process::Command::new("cmd")
+        .args(["/c", "start", "", &config_path.to_string_lossy()])
+        .spawn()
+    }
+    #[cfg(target_os = "macos")]
+    {
+      std::process::Command::new("open")
+        .arg(&config_path)
+        .spawn()
+    }
+    #[cfg(target_os = "linux")]
+    {
+      std::process::Command::new("xdg-open")
+        .arg(&config_path)
+        .spawn()
+    }
+  };
+
+  match result {
+    Ok(_) => serde_json::json!({ "ok": true }),
+    Err(e) => serde_json::json!({ "ok": false, "error": format!("无法打开文件: {}", e) }),
+  }
+}
+
+#[tauri::command]
+fn setup_codex_config() -> Value {
+  let Some(ipc_path) = get_ipc_path() else {
+    return serde_json::json!({ "ok": false, "error": "daemon not running" });
+  };
+
+  let req = r#"{"type":"setup_codex_config_request"}"#;
+  if let Some(resp) = ipc_request_typed::<GenericOkResponse>(&ipc_path, req) {
+    serde_json::json!({ "ok": resp.payload.ok, "error": resp.payload.error })
+  } else {
+    serde_json::json!({ "ok": false, "error": "no response from daemon" })
+  }
+}
+
+#[tauri::command]
+fn check_claude_config() -> Value {
+  let Some(ipc_path) = get_ipc_path() else {
+    return serde_json::json!(null);
+  };
+
+  let req = r#"{"type":"check_claude_config_request"}"#;
+  if let Some(value) = ipc_request(&ipc_path, req) {
+    if let Some(payload) = value.get("payload") {
+      return payload.clone();
+    }
+  }
+  serde_json::json!(null)
+}
+
+#[tauri::command]
+fn setup_claude_config() -> Value {
+  let Some(ipc_path) = get_ipc_path() else {
+    return serde_json::json!({ "ok": false, "error": "daemon not running" });
+  };
+
+  let req = r#"{"type":"setup_claude_config_request"}"#;
+  if let Some(resp) = ipc_request_typed::<GenericOkResponse>(&ipc_path, req) {
+    serde_json::json!({ "ok": resp.payload.ok, "error": resp.payload.error })
+  } else {
+    serde_json::json!({ "ok": false, "error": "no response from daemon" })
+  }
+}
+
+#[tauri::command]
+fn open_claude_config_file() -> Value {
+  let Some(home) = get_home_dir() else {
+    return serde_json::json!({ "ok": false, "error": "cannot determine home directory" });
+  };
+  let config_path = PathBuf::from(&home).join(".claude").join("settings.json");
+
+  if !config_path.exists() {
+    let claude_dir = PathBuf::from(&home).join(".claude");
+    if !claude_dir.exists() {
+      return serde_json::json!({ "ok": false, "error": "~/.claude/ 目录不存在，请先安装 Claude Code" });
+    }
+    if let Err(e) = fs::write(&config_path, "{}") {
+      return serde_json::json!({ "ok": false, "error": format!("无法创建 settings.json: {}", e) });
+    }
+  }
+
+  let result = {
+    #[cfg(target_os = "windows")]
+    {
+      std::process::Command::new("cmd")
+        .args(["/c", "start", "", &config_path.to_string_lossy()])
+        .spawn()
+    }
+    #[cfg(target_os = "macos")]
+    {
+      std::process::Command::new("open")
+        .arg(&config_path)
+        .spawn()
+    }
+    #[cfg(target_os = "linux")]
+    {
+      std::process::Command::new("xdg-open")
+        .arg(&config_path)
+        .spawn()
+    }
+  };
+
+  match result {
+    Ok(_) => serde_json::json!({ "ok": true }),
+    Err(e) => serde_json::json!({ "ok": false, "error": format!("无法打开文件: {}", e) }),
+  }
+}
+
 /// Auto-start the daemon on app launch.
 /// Spawns the daemon if not already running, then waits up to ~6 seconds
 /// for it to become reachable. Runs on a background thread so the UI is
@@ -560,6 +707,12 @@ fn main() {
       get_config,
       save_config,
       start_daemon,
+      check_codex_config,
+      setup_codex_config,
+      open_codex_config_file,
+      check_claude_config,
+      setup_claude_config,
+      open_claude_config_file,
     ])
     .setup(|app| {
       // Auto-start daemon on a background thread so UI is not blocked

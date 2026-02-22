@@ -95,6 +95,8 @@ export function App() {
   const [selected, setSelected] = useState("");
   const [bots, setBots] = useState<BotsData>(emptyBots);
   const [daemonStarting, setDaemonStarting] = useState(false);
+  const [codexConfigStatus, setCodexConfigStatus] = useState<"unknown" | "ok" | "missing" | "setting_up" | "error">("unknown");
+  const [codexConfigError, setCodexConfigError] = useState("");
 
   const loadBots = useCallback(async () => {
     try {
@@ -157,6 +159,27 @@ export function App() {
     loadBots();
   }, [loadBots]);
 
+  // Check Codex notify hook config when daemon is running
+  useEffect(() => {
+    if (!status.running) return;
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const result = await invoke<{ codexInstalled: boolean; notifyConfigured: boolean } | null>("check_codex_config");
+        if (cancelled) return;
+        if (!result || !result.codexInstalled) {
+          setCodexConfigStatus("ok"); // Codex not installed — nothing to warn about
+        } else {
+          setCodexConfigStatus(result.notifyConfigured ? "ok" : "missing");
+        }
+      } catch {
+        if (!cancelled) setCodexConfigStatus("unknown");
+      }
+    };
+    check();
+    return () => { cancelled = true; };
+  }, [status.running]);
+
   useEffect(() => {
     if (!selected && status.sessions[0]) {
       setSelected(status.sessions[0].session_id);
@@ -205,6 +228,12 @@ export function App() {
           ))}
         </aside>
         <main className="panel">
+          {codexConfigStatus === "missing" && (
+            <div className="codex-setup-bar">
+              <span>Codex notify hook 未配置，飞书将无法接收 AI 回复。</span>
+              <button onClick={() => setTab("settings")}>前往设置</button>
+            </div>
+          )}
           {tab === "sessions" ? (
             <SessionsView
               sessions={status.sessions}
@@ -859,6 +888,14 @@ function SettingsView({ daemonRunning }: { daemonRunning: boolean }) {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [codexStatus, setCodexStatus] = useState<"loading" | "configured" | "missing" | "not_installed" | "setting_up" | "error">("loading");
+  const [codexError, setCodexError] = useState("");
+  const [codexScriptPath, setCodexScriptPath] = useState("");
+  const [codexConfigPath, setCodexConfigPath] = useState("");
+  const [claudeStatus, setClaudeStatus] = useState<"loading" | "configured" | "missing" | "not_installed" | "setting_up" | "error">("loading");
+  const [claudeError, setClaudeError] = useState("");
+  const [claudeScriptPath, setClaudeScriptPath] = useState("");
+  const [claudeConfigPath, setClaudeConfigPath] = useState("");
 
   useEffect(() => {
     const load = async () => {
@@ -875,6 +912,63 @@ function SettingsView({ daemonRunning }: { daemonRunning: boolean }) {
     };
     load();
   }, []);
+
+  const checkCodexStatus = useCallback(async () => {
+    if (!daemonRunning) {
+      setCodexStatus("loading");
+      return;
+    }
+    try {
+      const result = await invoke<{
+        codexInstalled: boolean;
+        notifyConfigured: boolean;
+        currentNotify?: string;
+        felayScriptPath: string;
+        configFilePath: string;
+      } | null>("check_codex_config");
+      if (!result) { setCodexStatus("loading"); return; }
+      setCodexScriptPath(result.felayScriptPath);
+      setCodexConfigPath(result.configFilePath);
+      if (!result.codexInstalled) {
+        setCodexStatus("not_installed");
+      } else {
+        setCodexStatus(result.notifyConfigured ? "configured" : "missing");
+      }
+    } catch {
+      setCodexStatus("loading");
+    }
+  }, [daemonRunning]);
+
+  const checkClaudeStatus = useCallback(async () => {
+    if (!daemonRunning) {
+      setClaudeStatus("loading");
+      return;
+    }
+    try {
+      const result = await invoke<{
+        claudeInstalled: boolean;
+        hookConfigured: boolean;
+        currentHookCommand?: string;
+        felayScriptPath: string;
+        configFilePath: string;
+      } | null>("check_claude_config");
+      if (!result) { setClaudeStatus("loading"); return; }
+      setClaudeScriptPath(result.felayScriptPath);
+      setClaudeConfigPath(result.configFilePath);
+      if (!result.claudeInstalled) {
+        setClaudeStatus("not_installed");
+      } else {
+        setClaudeStatus(result.hookConfigured ? "configured" : "missing");
+      }
+    } catch {
+      setClaudeStatus("loading");
+    }
+  }, [daemonRunning]);
+
+  useEffect(() => {
+    checkCodexStatus();
+    checkClaudeStatus();
+  }, [checkCodexStatus, checkClaudeStatus]);
 
   if (!config) return <p>加载中...</p>;
 
@@ -1030,6 +1124,174 @@ function SettingsView({ daemonRunning }: { daemonRunning: boolean }) {
             />
           </label>
         </>
+      )}
+
+      {/* ── Codex 集成 ── */}
+      <h4 style={{ marginTop: "1em", marginBottom: "0.2em" }}>Codex 集成</h4>
+      <p className="todo" style={{ fontSize: "0.85em" }}>
+        Codex 需要配置 notify hook 才能将 AI 回复转发到飞书。Felay 会在启动 Codex 时自动配置，也可在此手动管理。
+      </p>
+      <div className="codex-status-row">
+        <span className="codex-status-label">Notify Hook 状态：</span>
+        {codexStatus === "loading" && <span className="codex-tag codex-tag-neutral">检测中...</span>}
+        {codexStatus === "configured" && <span className="codex-tag codex-tag-ok">已配置</span>}
+        {codexStatus === "not_installed" && <span className="codex-tag codex-tag-neutral">Codex 未安装</span>}
+        {codexStatus === "setting_up" && <span className="codex-tag codex-tag-neutral">配置中...</span>}
+        {codexStatus === "missing" && (
+          <>
+            <span className="codex-tag codex-tag-warn">未配置</span>
+            <button
+              className="codex-action-btn"
+              onClick={async () => {
+                setCodexStatus("setting_up");
+                try {
+                  const result = await invoke<{ ok: boolean; error?: string }>("setup_codex_config");
+                  if (result.ok) {
+                    setCodexStatus("configured");
+                  } else {
+                    setCodexError(result.error ?? "未知错误");
+                    setCodexStatus("error");
+                  }
+                } catch (e) {
+                  setCodexError(String(e));
+                  setCodexStatus("error");
+                }
+              }}
+            >
+              一键配置
+            </button>
+          </>
+        )}
+        {codexStatus === "error" && (
+          <>
+            <span className="codex-tag codex-tag-err">配置失败</span>
+            <button className="codex-action-btn" onClick={checkCodexStatus}>重试</button>
+          </>
+        )}
+      </div>
+      {codexStatus === "error" && (
+        <p className="msg-err" style={{ fontSize: "0.85em" }}>
+          {codexError}
+        </p>
+      )}
+      {codexStatus !== "loading" && codexStatus !== "not_installed" && (
+        <div className="codex-detail-box">
+          <div className="codex-detail-row">
+            <span className="codex-detail-label">配置文件：</span>
+            <code className="codex-detail-path">{codexConfigPath || "~/.codex/config.toml"}</code>
+            <button
+              className="codex-action-btn"
+              onClick={async () => {
+                try {
+                  const result = await invoke<{ ok: boolean; error?: string }>("open_codex_config_file");
+                  if (!result.ok) {
+                    setCodexError(result.error ?? "无法打开文件");
+                    setCodexStatus("error");
+                  }
+                } catch (e) {
+                  setCodexError(String(e));
+                  setCodexStatus("error");
+                }
+              }}
+            >
+              打开文件
+            </button>
+          </div>
+          <div className="codex-detail-row">
+            <span className="codex-detail-label">通知脚本：</span>
+            <code className="codex-detail-path">{codexScriptPath || "未知"}</code>
+          </div>
+          {(codexStatus === "missing" || codexStatus === "error") && (
+            <div className="codex-manual-hint">
+              <span>手动配置：在配置文件<strong>所有 [section] 之前</strong>添加：</span>
+              <code className="codex-detail-code">{`notify = ["node", "${codexScriptPath}"]`}</code>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Claude Code 集成 ── */}
+      <h4 style={{ marginTop: "1em", marginBottom: "0.2em" }}>Claude Code 集成</h4>
+      <p className="todo" style={{ fontSize: "0.85em" }}>
+        Claude Code 需要配置 Stop hook 才能将 AI 回复转发到飞书。Felay 会在启动 Claude 时自动配置，也可在此手动管理。
+      </p>
+      <div className="codex-status-row">
+        <span className="codex-status-label">Stop Hook 状态：</span>
+        {claudeStatus === "loading" && <span className="codex-tag codex-tag-neutral">检测中...</span>}
+        {claudeStatus === "configured" && <span className="codex-tag codex-tag-ok">已配置</span>}
+        {claudeStatus === "not_installed" && <span className="codex-tag codex-tag-neutral">Claude Code 未安装</span>}
+        {claudeStatus === "setting_up" && <span className="codex-tag codex-tag-neutral">配置中...</span>}
+        {claudeStatus === "missing" && (
+          <>
+            <span className="codex-tag codex-tag-warn">未配置</span>
+            <button
+              className="codex-action-btn"
+              onClick={async () => {
+                setClaudeStatus("setting_up");
+                try {
+                  const result = await invoke<{ ok: boolean; error?: string }>("setup_claude_config");
+                  if (result.ok) {
+                    setClaudeStatus("configured");
+                  } else {
+                    setClaudeError(result.error ?? "未知错误");
+                    setClaudeStatus("error");
+                  }
+                } catch (e) {
+                  setClaudeError(String(e));
+                  setClaudeStatus("error");
+                }
+              }}
+            >
+              一键配置
+            </button>
+          </>
+        )}
+        {claudeStatus === "error" && (
+          <>
+            <span className="codex-tag codex-tag-err">配置失败</span>
+            <button className="codex-action-btn" onClick={checkClaudeStatus}>重试</button>
+          </>
+        )}
+      </div>
+      {claudeStatus === "error" && (
+        <p className="msg-err" style={{ fontSize: "0.85em" }}>
+          {claudeError}
+        </p>
+      )}
+      {claudeStatus !== "loading" && claudeStatus !== "not_installed" && (
+        <div className="codex-detail-box">
+          <div className="codex-detail-row">
+            <span className="codex-detail-label">配置文件：</span>
+            <code className="codex-detail-path">{claudeConfigPath || "~/.claude/settings.json"}</code>
+            <button
+              className="codex-action-btn"
+              onClick={async () => {
+                try {
+                  const result = await invoke<{ ok: boolean; error?: string }>("open_claude_config_file");
+                  if (!result.ok) {
+                    setClaudeError(result.error ?? "无法打开文件");
+                    setClaudeStatus("error");
+                  }
+                } catch (e) {
+                  setClaudeError(String(e));
+                  setClaudeStatus("error");
+                }
+              }}
+            >
+              打开文件
+            </button>
+          </div>
+          <div className="codex-detail-row">
+            <span className="codex-detail-label">Hook 脚本：</span>
+            <code className="codex-detail-path">{claudeScriptPath || "未知"}</code>
+          </div>
+          {(claudeStatus === "missing" || claudeStatus === "error") && (
+            <div className="codex-manual-hint">
+              <span>手动配置：在 settings.json 中添加 hooks 配置：</span>
+              <code className="codex-detail-code">{`"hooks": { "Stop": [{ "matcher": "", "hooks": [{ "type": "command", "command": "node ${claudeScriptPath}" }] }] }`}</code>
+            </div>
+          )}
+        </div>
       )}
 
       {message && (

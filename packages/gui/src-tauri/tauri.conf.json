@@ -16,6 +16,8 @@
     "resources": {
       "../../../build/felay.exe": "./",
       "../../../build/felay-daemon.exe": "./",
+      "../../../build/felay-notify.js": "./",
+      "../../../build/felay-claude-hook.js": "./",
       "../../../build/prebuilds/**/*": "prebuilds/"
     },
     "windows": {

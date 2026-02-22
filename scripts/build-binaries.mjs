@@ -234,6 +234,18 @@ for (const wf of workerFiles) {
   }
 }
 
+// Step 7: Copy hook scripts (Codex notify + Claude Code Stop hook)
+console.log("[build] Copying hook scripts...");
+for (const hookFile of ["felay-notify.js", "felay-claude-hook.js"]) {
+  const hookSrc = path.join(ROOT, "scripts", hookFile);
+  if (fs.existsSync(hookSrc)) {
+    fs.copyFileSync(hookSrc, path.join(BUILD, hookFile));
+    console.log(`  Copied ${hookFile}`);
+  } else {
+    console.warn(`[build] Warning: scripts/${hookFile} not found`);
+  }
+}
+
 // Summary
 const cliSize = fs.statSync(path.join(BUILD, "felay.exe")).size;
 const daemonSize = fs.statSync(path.join(BUILD, "felay-daemon.exe")).size;

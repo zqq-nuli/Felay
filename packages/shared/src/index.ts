@@ -277,6 +277,71 @@ export interface CodexNotifyEvent {
   };
 }
 
+/* ── Claude Code notify hook message ── */
+
+export interface ClaudeNotifyEvent {
+  type: "claude_notify";
+  payload: {
+    cwd: string;
+    message: string;
+    sessionId: string;
+  };
+}
+
+/* ── Claude Code config check/setup messages ── */
+
+export interface CheckClaudeConfigRequest {
+  type: "check_claude_config_request";
+}
+
+export interface CheckClaudeConfigResponse {
+  type: "check_claude_config_response";
+  payload: {
+    claudeInstalled: boolean;
+    configExists: boolean;
+    hookConfigured: boolean;
+    currentHookCommand?: string;
+    felayScriptPath: string;
+    configFilePath: string;
+  };
+}
+
+export interface SetupClaudeConfigRequest {
+  type: "setup_claude_config_request";
+}
+
+export interface SetupClaudeConfigResponse {
+  type: "setup_claude_config_response";
+  payload: { ok: boolean; error?: string };
+}
+
+/* ── Codex config check/setup messages ── */
+
+export interface CheckCodexConfigRequest {
+  type: "check_codex_config_request";
+}
+
+export interface CheckCodexConfigResponse {
+  type: "check_codex_config_response";
+  payload: {
+    codexInstalled: boolean;
+    configExists: boolean;
+    notifyConfigured: boolean;
+    currentNotify?: string;
+    felayScriptPath: string;
+    configFilePath: string;
+  };
+}
+
+export interface SetupCodexConfigRequest {
+  type: "setup_codex_config_request";
+}
+
+export interface SetupCodexConfigResponse {
+  type: "setup_codex_config_response";
+  payload: { ok: boolean; error?: string };
+}
+
 export type DaemonMessage =
   | SessionRegistration
   | PtyOutputEvent
@@ -294,7 +359,12 @@ export type DaemonMessage =
   | SaveConfigRequest
   | SetDefaultBotRequest
   | GetDefaultsRequest
-  | CodexNotifyEvent;
+  | CodexNotifyEvent
+  | CheckCodexConfigRequest
+  | SetupCodexConfigRequest
+  | ClaudeNotifyEvent
+  | CheckClaudeConfigRequest
+  | SetupClaudeConfigRequest;
 
 export type DaemonReply =
   | StatusResponse
@@ -307,7 +377,11 @@ export type DaemonReply =
   | GetConfigResponse
   | SaveConfigResponse
   | SetDefaultBotResponse
-  | GetDefaultsResponse;
+  | GetDefaultsResponse
+  | CheckCodexConfigResponse
+  | SetupCodexConfigResponse
+  | CheckClaudeConfigResponse
+  | SetupClaudeConfigResponse;
 
 export interface DaemonLockFile {
   pid: number;
