@@ -9,9 +9,15 @@
     "dev:cli": "pnpm --filter @felay/cli dev",
     "dev:gui": "pnpm --filter @felay/gui dev",
     "build": "pnpm -r build",
+    "build:binaries": "node scripts/build-binaries.mjs",
+    "build:all": "pnpm run build && node scripts/build-binaries.mjs",
     "setup": "pnpm install && pnpm run build && cd packages/cli && npm link",
     "uninstall": "cd packages/cli && npm unlink -g @felay/cli",
     "build:gui": "pnpm --filter @felay/shared build && cd packages/gui/src-tauri && cargo tauri build",
     "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "@yao-pkg/pkg": "^6.0.0"
   }
 }
