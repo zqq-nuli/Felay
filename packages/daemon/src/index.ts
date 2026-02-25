@@ -46,6 +46,7 @@ const registerSchema = z.object({
     cwd: z.string(),
     pid: z.number(),
     startedAt: z.string(),
+    proxyMode: z.boolean().optional(),
   }),
 });
 
@@ -208,6 +209,20 @@ const claudeNotifySchema = z.object({
 const checkClaudeConfigSchema = z.object({ type: z.literal("check_claude_config_request") });
 const setupClaudeConfigSchema = z.object({ type: z.literal("setup_claude_config_request") });
 
+const apiProxyEventSchema = z.object({
+  type: z.literal("api_proxy_event"),
+  payload: z.object({
+    sessionId: z.string(),
+    provider: z.enum(["anthropic", "openai"]),
+    model: z.string(),
+    stopReason: z.string(),
+    textContent: z.string(),
+    toolUseBlocks: z.array(z.object({ name: z.string(), input: z.string() })).optional(),
+    isSuggestion: z.boolean(),
+    completedAt: z.string(),
+  }),
+});
+
 /* ── Helpers ── */
 
 function isCodexSession(cli: string): boolean {
@@ -306,6 +321,9 @@ async function main(): Promise<void> {
 
   feishuManager = new FeishuManager(registry, configManager, socketMap, outputBuffer);
 
+  // Clean up residual images from previous daemon runs
+  await FeishuManager.cleanupImages();
+
   let stopping = false;
 
   const server = net.createServer((socket) => {
@@ -371,11 +389,6 @@ async function main(): Promise<void> {
     console.log(`[felay:daemon] listening on ${ipcPath}`);
   });
 
-  // Prune ended sessions every 5 minutes to prevent unbounded memory growth
-  setInterval(() => {
-    registry.pruneEnded();
-  }, 5 * 60 * 1000);
-
   const signalHandler = async () => {
     if (stopping) return;
     stopping = true;
@@ -413,26 +426,41 @@ async function handleMessage(
       cwd: register.data.payload.cwd,
       status: "listening",
       startedAt: register.data.payload.startedAt,
+      proxyMode: register.data.payload.proxyMode,
     });
     // M3: track session→socket mapping
     socketMap.set(sid, socket);
     socketSessions.add(sid);
 
-    // Auto-bind default bots for newly registered sessions
+    // Auto-bind bots for newly registered sessions: prefer default, fallback to any idle bot
     if (isNewSession) {
       const defaults = configManager.getDefaults();
-      if (defaults.defaultInteractiveBotId) {
-        const bound = registry.bindInteractiveBot(sid, defaults.defaultInteractiveBotId);
-        if (bound) {
-          void feishuManager.startInteractiveBot(defaults.defaultInteractiveBotId);
-          console.log(`[felay] auto-bound interactive bot ${defaults.defaultInteractiveBotId} to session ${sid}`);
-        }
+      const allBots = configManager.getBots();
+      const { interactiveBotIds: usedInteractive, pushBotIds: usedPush } = registry.getActiveBotIds();
+
+      // Interactive bot: prefer default, fall back to any idle
+      let interactiveBotToUse: string | undefined;
+      if (defaults.defaultInteractiveBotId && !usedInteractive.has(defaults.defaultInteractiveBotId)) {
+        interactiveBotToUse = defaults.defaultInteractiveBotId;
+      } else {
+        interactiveBotToUse = allBots.interactive.find((b) => !usedInteractive.has(b.id))?.id;
       }
-      if (defaults.defaultPushBotId) {
-        const bound = registry.bindPushBot(sid, defaults.defaultPushBotId);
-        if (bound) {
-          console.log(`[felay] auto-bound push bot ${defaults.defaultPushBotId} to session ${sid}`);
-        }
+      if (interactiveBotToUse) {
+        registry.bindInteractiveBot(sid, interactiveBotToUse);
+        void feishuManager.startInteractiveBot(interactiveBotToUse);
+        console.log(`[felay] auto-bound interactive bot ${interactiveBotToUse} to session ${sid}`);
+      }
+
+      // Push bot: prefer default, fall back to any idle
+      let pushBotToUse: string | undefined;
+      if (defaults.defaultPushBotId && !usedPush.has(defaults.defaultPushBotId)) {
+        pushBotToUse = defaults.defaultPushBotId;
+      } else {
+        pushBotToUse = allBots.push.find((b) => !usedPush.has(b.id))?.id;
+      }
+      if (pushBotToUse) {
+        registry.bindPushBot(sid, pushBotToUse);
+        console.log(`[felay] auto-bound push bot ${pushBotToUse} to session ${sid}`);
       }
     }
     return;
@@ -446,8 +474,12 @@ async function handleMessage(
     // Always feed summary buffer (for task summary on session end)
     outputBuffer.appendSummaryChunk(sessionId, chunk);
 
-    // M3: feed output to buffers (skip hook-based sessions — they send clean text via notify)
+    // M3: feed output to buffers (skip hook-based and proxy-mode sessions)
     const session = registry.get(sessionId);
+    if (session?.proxyMode) {
+      // Proxy mode: output capture is handled by the API proxy, skip interactive/push buffers
+      return;
+    }
     if (session?.interactiveBotId && !isHookSession(session.cli)) {
       outputBuffer.appendChunk(sessionId, chunk);
     }
@@ -460,9 +492,25 @@ async function handleMessage(
   const ended = endedSchema.safeParse(parsed);
   if (ended.success) {
     const sid = ended.data.payload.sessionId;
+    const session = registry.get(sid);
+
     registry.end(sid);
-    // M3: notify FeishuManager + cleanup socket
-    void feishuManager.onSessionEnded(sid);
+
+    // Wait for async cleanup (send end card, delete images, etc.)
+    await feishuManager.onSessionEnded(sid);
+
+    // Release interactive bot: stop WSClient if no other active session uses it
+    if (session?.interactiveBotId) {
+      const stillUsed = registry
+        .list()
+        .some((s) => s.sessionId !== sid && s.interactiveBotId === session.interactiveBotId && s.status !== "ended");
+      if (!stillUsed) {
+        feishuManager.stopInteractiveBot(session.interactiveBotId);
+      }
+    }
+
+    // Fully remove from registry
+    registry.remove(sid);
     socketMap.delete(sid);
     socketSessions.delete(sid);
     return;
@@ -747,6 +795,10 @@ async function handleMessage(
       (s) => s.status !== "ended" && s.cwd === cwd
     );
     if (session) {
+      if (session.proxyMode) {
+        console.log(`[felay] skipping hook notify for proxy session ${session.sessionId}`);
+        return;
+      }
       console.log(
         `[felay] codex notify for session ${session.sessionId}: ${message.slice(0, 80)}...`
       );
@@ -768,6 +820,10 @@ async function handleMessage(
       (s) => s.status !== "ended" && s.cwd === cwd
     );
     if (session) {
+      if (session.proxyMode) {
+        console.log(`[felay] skipping hook notify for proxy session ${session.sessionId}`);
+        return;
+      }
       console.log(
         `[felay] claude notify for session ${session.sessionId}: ${message.slice(0, 80)}...`
       );
@@ -799,6 +855,69 @@ async function handleMessage(
       payload: result,
     };
     socket.write(toJsonLine(payload));
+    return;
+  }
+
+  /* ── API proxy event ── */
+
+  const apiProxyEvent = apiProxyEventSchema.safeParse(parsed);
+  if (apiProxyEvent.success) {
+    const { sessionId, model, stopReason, textContent, toolUseBlocks, isSuggestion } = apiProxyEvent.data.payload;
+    const session = registry.get(sessionId);
+    if (!session) {
+      console.log(`[felay] api_proxy_event: unknown session ${sessionId}`);
+      return;
+    }
+    if (!session.proxyMode) {
+      console.log(`[felay] api_proxy_event: session ${sessionId} not in proxy mode, ignoring`);
+      return;
+    }
+
+    const isEndTurn = (stopReason === "end_turn" || stopReason === "stop");
+
+    // ── Filter: skip internal auxiliary requests ──
+    // Claude Code uses haiku for internal tasks (warmup, file path extraction, etc.)
+    if (model.includes("haiku")) {
+      console.log(`[felay] skipping haiku request for ${sessionId}: ${textContent.slice(0, 50)}`);
+      return;
+    }
+    // Claude Code's "SUGGESTION MODE" predicts user's next input — not a real reply
+    if (isSuggestion) {
+      console.log(`[felay] skipping suggestion for ${sessionId}: ${textContent.slice(0, 50)}`);
+      return;
+    }
+
+    console.log(`[felay] api_proxy_event for ${sessionId}: model=${model}, stopReason=${stopReason}, textLen=${textContent.length}`);
+
+    if (isEndTurn && textContent.trim()) {
+      // ── Real reply: send to interactive bot + push bot ──
+      void feishuManager.handleCodexNotify(sessionId, textContent, true);
+      if (session.pushBotId && session.pushEnabled) {
+        void feishuManager.sendPushCleanMessage(sessionId, textContent);
+      }
+    } else if (!isEndTurn && session.pushBotId && session.pushEnabled) {
+      // ── Tool use: push bot only, formatted ──
+      let pushText = textContent || "";
+      if (toolUseBlocks?.length) {
+        const toolLines = toolUseBlocks.map((t) => {
+          // Try to extract a human-readable summary from common tool inputs
+          let detail = "";
+          try {
+            const input = JSON.parse(t.input);
+            if (input.command) detail = input.command;            // Bash
+            else if (input.file_path) detail = input.file_path;  // Read/Edit/Write
+            else if (input.pattern) detail = input.pattern;      // Grep/Glob
+            else if (input.query) detail = input.query;          // WebSearch
+          } catch { /* not JSON or no known field */ }
+          return detail ? `**Tool: ${t.name}**\n\`${detail}\`` : `**Tool: ${t.name}**`;
+        });
+        pushText += (pushText ? "\n\n" : "") + toolLines.join("\n\n");
+      }
+      if (pushText.trim()) {
+        void feishuManager.sendPushCleanMessage(sessionId, pushText);
+      }
+    }
+
     return;
   }
 }

@@ -10,6 +10,7 @@ export interface SessionInfo {
   interactiveBotId?: string;
   pushBotId?: string;
   pushEnabled?: boolean;
+  proxyMode?: boolean;
 }
 
 export class SessionRegistry {
@@ -40,6 +41,10 @@ export class SessionRegistry {
       status: "ended",
       updatedAt: new Date().toISOString(),
     });
+  }
+
+  remove(sessionId: string): boolean {
+    return this.sessions.delete(sessionId);
   }
 
   touchProxy(sessionId: string): void {
@@ -109,6 +114,17 @@ export class SessionRegistry {
 
   activeCount(): number {
     return this.list().filter((s) => s.status !== "ended").length;
+  }
+
+  getActiveBotIds(): { interactiveBotIds: Set<string>; pushBotIds: Set<string> } {
+    const interactiveBotIds = new Set<string>();
+    const pushBotIds = new Set<string>();
+    for (const session of this.sessions.values()) {
+      if (session.status === "ended") continue;
+      if (session.interactiveBotId) interactiveBotIds.add(session.interactiveBotId);
+      if (session.pushBotId) pushBotIds.add(session.pushBotId);
+    }
+    return { interactiveBotIds, pushBotIds };
   }
 
   /** Remove ended sessions older than the given max age (ms). Default 30 minutes. */

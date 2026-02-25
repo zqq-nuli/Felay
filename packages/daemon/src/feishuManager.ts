@@ -1,4 +1,7 @@
 import net from "node:net";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import crypto from "node:crypto";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import {
@@ -288,7 +291,239 @@ export class FeishuManager {
         }
       }
 
-      // Only handle text messages
+      // Find session bound to this bot (shared by both image and text branches)
+      const session = this.registry
+        .list()
+        .find((s) => s.interactiveBotId === botId && s.status !== "ended");
+
+      // ── Image message branch ──
+      if (messageType === "image") {
+        if (!session) {
+          console.log(`[felay] no active session bound to bot ${botId}, ignoring image`);
+          return;
+        }
+
+        // Parse image_key from content
+        let imageKey: string;
+        try {
+          const parsed = JSON.parse(rawContent);
+          imageKey = parsed.image_key;
+        } catch {
+          console.log("[felay] failed to parse image content");
+          return;
+        }
+        if (!imageKey) {
+          console.log("[felay] image message missing image_key");
+          return;
+        }
+
+        // Download image to ~/.felay/images/<sessionId>/
+        try {
+          const imagesDir = path.join(os.homedir(), ".felay", "images", session.sessionId);
+          await fs.promises.mkdir(imagesDir, { recursive: true });
+
+          const fileName = `${Date.now()}_${imageKey.slice(0, 8)}.png`;
+          const filePath = path.join(imagesDir, fileName);
+
+          // Use messageResource API to download images from user messages
+          // (im.v1.image.get only works for bot-uploaded images)
+          const resp = await client.im.v1.messageResource.get({
+            path: { message_id: messageId, file_key: imageKey },
+            params: { type: "image" },
+          });
+
+          // Write the response stream/buffer to file
+          if (resp && typeof (resp as any).writeFile === "function") {
+            await (resp as any).writeFile(filePath);
+          } else {
+            // Fallback: resp itself may be a readable stream
+            const stream = typeof (resp as any).getReadableStream === "function"
+              ? (resp as any).getReadableStream()
+              : resp;
+            await new Promise<void>((resolve, reject) => {
+              const ws = fs.createWriteStream(filePath);
+              (stream as NodeJS.ReadableStream).pipe(ws);
+              ws.on("finish", resolve);
+              ws.on("error", reject);
+            });
+          }
+
+          console.log(`[felay] downloaded image for session ${session.sessionId}: ${fileName}`);
+
+          // Send image path to CLI immediately (paste into input box)
+          const socket = this.socketMap.get(session.sessionId);
+          if (socket && !socket.destroyed) {
+            const feishuInput: FeishuInputEvent = {
+              type: "feishu_input",
+              payload: {
+                sessionId: session.sessionId,
+                text: "",
+                at: new Date().toISOString(),
+                images: [filePath],
+              },
+            };
+            socket.write(toJsonLine(feishuInput));
+          }
+        } catch (err) {
+          console.error(`[felay] failed to download image:`, err);
+          return;
+        }
+
+        // Add THUMBSUP reaction to acknowledge
+        try {
+          await client.im.v1.messageReaction.create({
+            path: { message_id: messageId },
+            data: { reaction_type: { emoji_type: "THUMBSUP" } },
+          });
+        } catch {
+          // best-effort
+        }
+
+        return;
+      }
+
+      // ── Post (rich text) message branch: image + text combo ──
+      if (messageType === "post") {
+        if (!session) {
+          console.log(`[felay] no active session bound to bot ${botId}, ignoring post`);
+          return;
+        }
+
+        // Parse post content: {"zh_cn":{"title":"...","content":[[{"tag":"text","text":"..."},{"tag":"img","image_key":"..."}]]}}
+        const postTexts: string[] = [];
+        const imageKeys: string[] = [];
+        try {
+          const parsed = JSON.parse(rawContent);
+          // Post content can be either:
+          // 1. Direct: {title, content: [[...]]}  (from im.message.receive_v1)
+          // 2. Wrapped in locale: {zh_cn: {title, content: [[...]]}}
+          let content: any;
+          if (Array.isArray(parsed.content)) {
+            content = parsed.content;
+          } else {
+            const localeContent = Object.values(parsed)[0] as any;
+            content = localeContent?.content;
+          }
+          if (Array.isArray(content)) {
+            for (const paragraph of content) {
+              if (Array.isArray(paragraph)) {
+                for (const element of paragraph) {
+                  if (element.tag === "text" && element.text) {
+                    postTexts.push(element.text);
+                  } else if (element.tag === "img" && element.image_key) {
+                    imageKeys.push(element.image_key);
+                  }
+                }
+              }
+            }
+          }
+        } catch {
+          console.log("[felay] failed to parse post content");
+          return;
+        }
+
+        const postText = postTexts.join("").trim();
+        if (!postText && imageKeys.length === 0) return;
+
+        const socket = this.socketMap.get(session.sessionId);
+        if (!socket || socket.destroyed) {
+          console.log(`[felay] no socket for session ${session.sessionId}`);
+          return;
+        }
+
+        // Download and send images first (CLI receives image paths before text)
+        if (imageKeys.length > 0) {
+          const imagesDir = path.join(os.homedir(), ".felay", "images", session.sessionId);
+          await fs.promises.mkdir(imagesDir, { recursive: true });
+
+          for (const imageKey of imageKeys) {
+            try {
+              const fileName = `${Date.now()}_${imageKey.slice(0, 8)}.png`;
+              const filePath = path.join(imagesDir, fileName);
+
+              const resp = await client.im.v1.messageResource.get({
+                path: { message_id: messageId, file_key: imageKey },
+                params: { type: "image" },
+              });
+
+              if (resp && typeof (resp as any).writeFile === "function") {
+                await (resp as any).writeFile(filePath);
+              } else {
+                const stream = typeof (resp as any).getReadableStream === "function"
+                  ? (resp as any).getReadableStream()
+                  : resp;
+                await new Promise<void>((resolve, reject) => {
+                  const ws = fs.createWriteStream(filePath);
+                  (stream as NodeJS.ReadableStream).pipe(ws);
+                  ws.on("finish", resolve);
+                  ws.on("error", reject);
+                });
+              }
+
+              console.log(`[felay] downloaded post image for session ${session.sessionId}: ${fileName}`);
+
+              // Send image path to CLI
+              const imgInput: FeishuInputEvent = {
+                type: "feishu_input",
+                payload: {
+                  sessionId: session.sessionId,
+                  text: "",
+                  at: new Date().toISOString(),
+                  images: [filePath],
+                },
+              };
+              socket.write(toJsonLine(imgInput));
+            } catch (err) {
+              console.error(`[felay] failed to download post image:`, err);
+            }
+          }
+        }
+
+        // Then send text (after images, so CLI processes images first)
+        if (postText) {
+          // Add THUMBSUP reaction
+          try {
+            await client.im.v1.messageReaction.create({
+              path: { message_id: messageId },
+              data: { reaction_type: { emoji_type: "THUMBSUP" } },
+            });
+          } catch {
+            // best-effort
+          }
+
+          const inputSettings = this.configManager.getSettings().input;
+          const feishuInput: FeishuInputEvent = {
+            type: "feishu_input",
+            payload: {
+              sessionId: session.sessionId,
+              text: postText + "\r",
+              at: new Date().toISOString(),
+              enterRetryCount: inputSettings?.enterRetryCount ?? 2,
+              enterRetryInterval: inputSettings?.enterRetryInterval ?? 500,
+            },
+          };
+          socket.write(toJsonLine(feishuInput));
+
+          if (!this.pendingReplies.has(session.sessionId)) {
+            if (!isCodexCli(session.cli) && !session.proxyMode) {
+              this.outputBuffer.startCollecting(session.sessionId);
+            }
+            this.pendingReplies.set(session.sessionId, { messageId, chatId });
+          }
+
+          if (!this.sessionChatIds.has(session.sessionId)) {
+            this.sessionChatIds.set(session.sessionId, chatId);
+          }
+
+          console.log(
+            `[felay] forwarded post message to session ${session.sessionId}: ${postText.slice(0, 50)}...`
+          );
+        }
+
+        return;
+      }
+
+      // ── Text message branch ──
       if (messageType !== "text") {
         console.log(`[felay] ignoring non-text message type: ${messageType}`);
         return;
@@ -314,11 +549,6 @@ export class FeishuManager {
       } catch (err) {
         console.log("[felay] failed to add reaction:", err);
       }
-
-      // Find session bound to this bot
-      const session = this.registry
-        .list()
-        .find((s) => s.interactiveBotId === botId && s.status !== "ended");
 
       if (!session) {
         console.log(`[felay] no active session bound to bot ${botId}`);
@@ -358,11 +588,11 @@ export class FeishuManager {
       };
       socket.write(toJsonLine(feishuInput));
 
-      // For Codex sessions, replies come via the notify hook (codex_notify),
+      // For Codex/proxy sessions, replies come via hooks or proxy (not PTY output),
       // so we skip OutputBuffer interactive collection entirely.
       // For other CLIs, use the existing PTY output collection + xterm parsing.
       if (!this.pendingReplies.has(session.sessionId)) {
-        if (!isCodexCli(session.cli)) {
+        if (!isCodexCli(session.cli) && !session.proxyMode) {
           this.outputBuffer.startCollecting(session.sessionId);
         }
         this.pendingReplies.set(session.sessionId, { messageId, chatId });
@@ -438,33 +668,36 @@ export class FeishuManager {
 
   /* ── Codex notify hook reply (called when codex_notify arrives) ── */
 
-  async handleCodexNotify(sessionId: string, cleanMessage: string): Promise<void> {
+  async handleCodexNotify(sessionId: string, cleanMessage: string, skipPush: boolean = false): Promise<void> {
     const text = cleanMessage.trim();
     if (!text) return;
 
     const session = this.registry.get(sessionId);
+    const botId = session?.interactiveBotId;
+    const conn = botId ? this.connections.get(botId) : undefined;
 
-    // 1. Send interactive reply (if there's a pending Feishu message to reply to)
+    // 1. Send interactive reply
+    // Use pendingReply chatId first, fall back to sessionChatIds (persisted from first message).
+    // This allows proxy mode to send multiple replies per user question.
     const pending = this.pendingReplies.get(sessionId);
-    if (pending) {
-      const botId = session?.interactiveBotId;
-      const conn = botId ? this.connections.get(botId) : undefined;
+    const chatId = pending?.chatId ?? this.sessionChatIds.get(sessionId);
 
-      if (conn) {
-        try {
-          await conn.client.im.v1.message.create({
-            params: { receive_id_type: "chat_id" },
-            data: {
-              receive_id: pending.chatId,
-              msg_type: "post",
-              content: JSON.stringify(markdownToPost(text)),
-            },
-          });
-        } catch (err) {
-          console.error(`[felay] failed to send codex notify reply for session ${sessionId}:`, err);
-        }
+    if (conn && chatId) {
+      try {
+        await conn.client.im.v1.message.create({
+          params: { receive_id_type: "chat_id" },
+          data: {
+            receive_id: chatId,
+            msg_type: "post",
+            content: JSON.stringify(markdownToPost(text)),
+          },
+        });
+      } catch (err) {
+        console.error(`[felay] failed to send codex notify reply for session ${sessionId}:`, err);
+      }
 
-        // Remove THUMBSUP reaction
+      // Remove THUMBSUP reaction on first reply only
+      if (pending) {
         try {
           const reactions = await conn.client.im.v1.messageReaction.list({
             path: { message_id: pending.messageId },
@@ -482,19 +715,19 @@ export class FeishuManager {
         } catch {
           // Reaction cleanup is best-effort
         }
+        this.pendingReplies.delete(sessionId);
       }
-
-      this.pendingReplies.delete(sessionId);
     }
 
     // 2. Push to webhook bot (if bound) — clean text, no PTY parsing needed
-    if (session?.pushBotId && session.pushEnabled) {
+    // Skip when called from proxy (proxy sends push per-turn separately)
+    if (!skipPush && session?.pushBotId && session.pushEnabled) {
       await this.sendPushCleanMessage(sessionId, text);
     }
   }
 
-  /** Push a pre-cleaned message via webhook (for Codex notify hook). */
-  private async sendPushCleanMessage(sessionId: string, cleanText: string): Promise<void> {
+  /** Push a pre-cleaned message via webhook (for Codex notify hook / API proxy). */
+  async sendPushCleanMessage(sessionId: string, cleanText: string): Promise<void> {
     const session = this.registry.get(sessionId);
     if (!session?.pushBotId || !session.pushEnabled) return;
 
@@ -765,6 +998,22 @@ export class FeishuManager {
     this.pendingReplies.delete(sessionId);
     this.sessionChatIds.delete(sessionId);
     this.outputBuffer.cleanup(sessionId);
+
+    // Clean up downloaded images for this session
+    const sessionImagesDir = path.join(os.homedir(), ".felay", "images", sessionId);
+    fs.promises.rm(sessionImagesDir, { recursive: true, force: true }).catch(() => {});
+  }
+
+  /* ── Startup cleanup ── */
+
+  /** Remove residual images directory from previous daemon runs. */
+  static async cleanupImages(): Promise<void> {
+    const imagesDir = path.join(os.homedir(), ".felay", "images");
+    try {
+      await fs.promises.rm(imagesDir, { recursive: true, force: true });
+    } catch {
+      // ignore — directory may not exist
+    }
   }
 
   /* ── Shutdown ── */

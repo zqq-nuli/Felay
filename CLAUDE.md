@@ -97,9 +97,53 @@ fn my_command() -> Value {
 - **Webhook**（推送机器人）：`msg_type: "post"`，使用 `markdownToPostBasic()` 转换（仅 text/a 标签）
 - **卡片消息**：`msg_type: "interactive"`，用于会话结束通知等结构化消息
 
-### Codex 专用回复路径
+### 回复捕获路径
 
-Codex 通过 `notify` 钩子（`scripts/felay-notify.js`）直接将 AI 回复发送到 daemon，无需 PTY 输出解析。其他 CLI 使用 xterm-headless 渲染 + extractResponseText 从 PTY 输出中提取回复。
+有三种模式捕获 AI CLI 的回复，优先级从高到低：
+
+1. **API 代理模式**（`felay run --proxy claude`）：在 CLI 和 Anthropic API 之间插入本地 HTTP 反向代理，透明转发流量并旁路解析 SSE 流。获取结构化 API 响应，质量最高。
+2. **Hook 模式**：Codex 通过 `notify` 钩子（`scripts/felay-notify.js`）、Claude Code 通过 `Stop` 钩子（`scripts/felay-claude-notify.js`）直接将 AI 回复发送到 daemon。
+3. **PTY 输出解析**：xterm-headless 渲染 + extractResponseText 从终端输出中提取回复。质量最低，仅作为兜底。
+
+### API 代理模式（Claude Code）
+
+```
+felay run --proxy claude
+  CLI ──fetch──► http://127.0.0.1:PORT ──转发──► https://api.anthropic.com
+                       │ (tee: 旁路解析 SSE)
+                       ▼
+                   Assembler → api_proxy_event → daemon → 飞书
+```
+
+**工作原理**：
+1. 读取上游 URL（`ANTHROPIC_BASE_URL` 或 `~/.claude/settings.json` 中的配置，默认 `https://api.anthropic.com`）
+2. 启动本地 HTTP 反向代理（随机端口）
+3. 写入 `~/.felay/proxy-hook.cjs`（monkey-patch fetch/http.request），通过 `NODE_OPTIONS=--require` 注入 Claude Code 进程
+4. 代理透明转发请求/响应，同时旁路解析 SSE 流
+5. 每个 API 响应流完成后（`message_stop`），组装 `AssembledMessage` 发给 daemon
+
+**消息过滤规则**（daemon 侧）：
+
+| 条件 | 处理 |
+|------|------|
+| `model` 包含 `haiku` | 丢弃（Claude Code 内部辅助请求：预热、文件路径提取等） |
+| 请求体含 `SUGGESTION MODE` | 丢弃（Claude Code 的输入建议功能，非真实回复） |
+| 主模型 + `stop_reason=tool_use` | 仅推送机器人（格式化显示工具名 + 关键参数） |
+| 主模型 + `stop_reason=end_turn` | 双向机器人（真实回复） + 推送机器人 |
+
+**Hook 与代理共存**：proxy 模式下，`codex_notify` / `claude_notify` hook 事件会被跳过（`skipping hook notify for proxy session`），避免重复发送。
+
+### 飞书消息接收
+
+daemon 支持三种飞书消息类型：
+
+- **`text`**：纯文字消息，直接注入 PTY 输入
+- **`image`**：纯图片消息，下载到 `~/.felay/images/<sessionId>/` 后通过 `feishu_input.images` 发送给 CLI
+- **`post`**（富文本）：图片+文字组合消息，先下载图片发给 CLI，再发送文字。post 内容格式为 `{title, content: [[{tag, text/image_key}]]}` 或带 locale 包裹的 `{zh_cn: {title, content}}`
+
+**要求**：飞书机器人需开通 `im:resource` 权限（开发者后台 → 权限管理）。
+
+**清理**：session 结束时自动删除 `~/.felay/images/<sessionId>/` 目录；daemon 启动时清理残留的 `~/.felay/images/` 目录。
 
 ## Known Issues & Workarounds
 
@@ -139,7 +183,31 @@ Codex 通过 `notify` 钩子（`scripts/felay-notify.js`）直接将 AI 回复�
 ## Testing
 
 无自动化测试。手动测试流程：
-1. 启动 daemon：`node packages/daemon/dist/index.js`（或 `pnpm dev:daemon`）
-2. 运行 CLI：`felay run codex`（或其他 AI CLI）
-3. 在飞书中发送消息验证双向通信
-4. 检查 daemon 控制台日志
+1. 构建：`pnpm run build`
+2. 启动 daemon：`node packages/daemon/dist/index.js`（或 `pnpm dev:daemon`）
+3. 运行 CLI：`felay run claude` / `felay run --proxy claude`（或其他 AI CLI）
+4. 在飞书中发送文字消息验证双向通信
+5. 在飞书中发送图片+文字组合消息（post 类型），验证图片和文字都被正确转发
+6. 在飞书中发送纯图片 → 再发文字，验证图片被附加到 CLI 输入
+7. **代理模式验证**：`felay run --proxy claude`
+   - 确认 haiku 请求被跳过（日志 `skipping haiku request`）
+   - 确认 suggestion 请求被跳过（日志 `skipping suggestion`）
+   - 确认 tool_use 仅发送到推送机器人
+   - 确认 end_turn 发送到双向机器人（干净的 AI 回复，无终端噪声）
+8. 检查 daemon 控制台日志
+
+### 调试重启流程
+
+**重要**：每次修改 daemon 或 shared 代码后，必须重新构建并重启 daemon。Claude Code 在完成代码修改和 `pnpm run build` 后，应自动执行重启流程（杀旧进程 + 启动新进程），无需用户手动操作。
+
+```bash
+pnpm run build                                    # 重新编译
+node -e "                                          # 杀掉旧 daemon
+  const fs=require('fs'),path=require('path'),os=require('os');
+  const lock=JSON.parse(fs.readFileSync(path.join(os.homedir(),'.felay','daemon.json'),'utf8'));
+  process.kill(lock.pid);
+"
+node packages/daemon/dist/index.js > daemon-log.txt 2>&1 &   # 后台启动新 daemon
+```
+
+CLI 侧需要退出旧的 `felay run claude` 并重新启动。

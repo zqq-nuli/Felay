@@ -68,6 +68,7 @@ export interface SessionRegistration {
     cwd: string;
     pid: number;
     startedAt: string;
+    proxyMode?: boolean;
   };
 }
 
@@ -91,6 +92,8 @@ export interface FeishuInputEvent {
     enterRetryCount?: number;
     /** Interval between Enter retries in ms. */
     enterRetryInterval?: number;
+    /** Local file paths for images sent before this text message. */
+    images?: string[];
   };
 }
 
@@ -288,6 +291,22 @@ export interface ClaudeNotifyEvent {
   };
 }
 
+/* ── API proxy event (from CLI proxy to daemon) ── */
+
+export interface ApiProxyEvent {
+  type: "api_proxy_event";
+  payload: {
+    sessionId: string;
+    provider: "anthropic" | "openai";
+    model: string;
+    stopReason: string;
+    textContent: string;
+    toolUseBlocks?: Array<{ name: string; input: string }>;
+    isSuggestion: boolean;
+    completedAt: string;
+  };
+}
+
 /* ── Claude Code config check/setup messages ── */
 
 export interface CheckClaudeConfigRequest {
@@ -364,7 +383,8 @@ export type DaemonMessage =
   | SetupCodexConfigRequest
   | ClaudeNotifyEvent
   | CheckClaudeConfigRequest
-  | SetupClaudeConfigRequest;
+  | SetupClaudeConfigRequest
+  | ApiProxyEvent;
 
 export type DaemonReply =
   | StatusResponse

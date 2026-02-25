@@ -10,9 +10,11 @@ import {
   type SessionRegistration,
   type PtyOutputEvent,
   type SessionEndedEvent,
+  type ApiProxyEvent,
 } from "@felay/shared";
 import { connectDaemon, requestDaemon, daemonStatus, daemonStop } from "./daemonClient.js";
 import { ensureDaemonRunning, getLiveDaemonIpc } from "./daemonLifecycle.js";
+import { startApiProxy, getProxyEnvConfig, resolveUpstream, writeHttpHook } from "./apiProxy.js";
 import type { CheckCodexConfigResponse, SetupCodexConfigResponse, CheckClaudeConfigResponse, SetupClaudeConfigResponse } from "@felay/shared";
 
 function resolveWindowsCli(cli: string): string {
@@ -95,19 +97,83 @@ async function ensureClaudeHook(): Promise<void> {
   }
 }
 
-async function runCli(cli: string, args: string[]): Promise<void> {
+async function runCli(cli: string, args: string[], proxyMode: boolean = false): Promise<void> {
   const sessionId = nanoid(10);
   const cwd = process.cwd();
   const startedAt = new Date().toISOString();
 
   await ensureDaemonRunning();
 
-  // Auto-configure CLI-specific hooks
-  if (isCodexCli(cli)) {
-    await ensureCodexNotifyHook();
+  // Auto-configure CLI-specific hooks (skip in proxy mode — proxy handles output)
+  if (!proxyMode) {
+    if (isCodexCli(cli)) {
+      await ensureCodexNotifyHook();
+    }
+    if (isClaudeCli(cli)) {
+      await ensureClaudeHook();
+    }
   }
-  if (isClaudeCli(cli)) {
-    await ensureClaudeHook();
+
+  // ── API proxy setup ──
+  let proxyServer: { port: number; close: () => Promise<void> } | null = null;
+  const proxyEnv: Record<string, string> = {};
+  // Shared mutable reference for proxy → daemon socket forwarding.
+  // The proxy's onMessage callback reads from this; setupSocket/handleDisconnect mutate it.
+  const proxyDaemonRef: { socket: net.Socket | null; connected: boolean } = { socket: null, connected: false };
+
+  if (proxyMode) {
+    const envConfig = getProxyEnvConfig(cli);
+    if (!envConfig) {
+      process.stderr.write(`[felay] API proxy mode is not supported for "${cli}" (only claude and codex are supported)\n`);
+      process.exit(1);
+    }
+
+    // Resolve the actual upstream URL (checks settings.json, env, default)
+    const originalUpstream = resolveUpstream(envConfig.envVar, envConfig.defaultUpstream, cli);
+
+    // Debug logging to file (TUI overwrites stderr)
+    const fsSync = await import("node:fs");
+    const pathMod = await import("node:path");
+    const osMod = await import("node:os");
+    const proxyLogFile = pathMod.default.join(osMod.default.homedir(), ".felay", "proxy-debug.log");
+    const plog = (m: string) => { try { fsSync.default.appendFileSync(proxyLogFile, `[${new Date().toISOString()}] ${m}\n`); } catch {} };
+
+    plog(`proxy starting: envVar=${envConfig.envVar} upstream=${originalUpstream} provider=${envConfig.provider}`);
+
+    proxyServer = await startApiProxy(
+      { upstreamBaseUrl: originalUpstream, provider: envConfig.provider },
+      (msg) => {
+        plog(`onMessage: socketOk=${!!proxyDaemonRef.socket} connected=${proxyDaemonRef.connected} model=${msg.model} stopReason=${msg.stopReason} textLen=${msg.textContent.length} suggestion=${msg.isSuggestion}`);
+        if (proxyDaemonRef.socket && proxyDaemonRef.connected) {
+          const event: ApiProxyEvent = {
+            type: "api_proxy_event",
+            payload: { sessionId, ...msg },
+          };
+          try {
+            proxyDaemonRef.socket.write(toJsonLine(event));
+            plog(`sent api_proxy_event to daemon`);
+          } catch (err) {
+            plog(`failed to send event: ${err}`);
+          }
+        } else {
+          plog(`daemon socket not connected, dropping event`);
+        }
+      }
+    );
+
+    const proxyUrl = `http://127.0.0.1:${proxyServer.port}`;
+    plog(`proxy ready on port ${proxyServer.port} → ${originalUpstream}`);
+
+    // Set env var override (works for CLIs that respect env vars)
+    proxyEnv[envConfig.envVar] = proxyUrl;
+
+    // Write NODE_OPTIONS hook to redirect fetch/http requests through our proxy.
+    // This is needed because Claude Code reads ANTHROPIC_BASE_URL from its own
+    // settings.json, overriding process env vars (anthropics/claude-code#8500).
+    const hookPath = writeHttpHook(proxyUrl, originalUpstream);
+    const existingNodeOptions = process.env.NODE_OPTIONS || "";
+    proxyEnv.NODE_OPTIONS = `--require ${JSON.stringify(hookPath)}${existingNodeOptions ? " " + existingNodeOptions : ""}`;
+    plog(`NODE_OPTIONS=${proxyEnv.NODE_OPTIONS}`);
   }
 
   let resolvedCli = resolveWindowsCli(cli);
@@ -123,14 +189,16 @@ async function runCli(cli: string, args: string[]): Promise<void> {
     resolvedCli = "cmd.exe";
   }
 
+  const baseEnv = Object.fromEntries(
+    Object.entries(process.env).filter((e): e is [string, string] => e[1] != null)
+  );
+
   const ptyProcess = pty.spawn(resolvedCli, spawnArgs, {
     name: "xterm-color",
     cols: process.stdout.columns || 120,
     rows: process.stdout.rows || 30,
     cwd,
-    env: Object.fromEntries(
-      Object.entries(process.env).filter((e): e is [string, string] => e[1] != null)
-    ),
+    env: { ...baseEnv, ...proxyEnv },
   });
 
   // ── Connection state (PTY lifecycle is independent of daemon socket) ──
@@ -148,7 +216,7 @@ async function runCli(cli: string, args: string[]): Promise<void> {
   function registerSession(socket: net.Socket): void {
     const register: SessionRegistration = {
       type: "register_session",
-      payload: { sessionId, cli, args, cwd, pid: process.pid, startedAt },
+      payload: { sessionId, cli, args, cwd, pid: process.pid, startedAt, proxyMode: proxyMode || undefined },
     };
     socket.write(toJsonLine(register));
   }
@@ -157,6 +225,10 @@ async function runCli(cli: string, args: string[]): Promise<void> {
     daemonSocket = socket;
     connected = true;
     reconnecting = false;
+
+    // Update shared proxy daemon reference
+    proxyDaemonRef.socket = socket;
+    proxyDaemonRef.connected = true;
 
     registerSession(socket);
 
@@ -168,34 +240,51 @@ async function runCli(cli: string, args: string[]): Promise<void> {
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          const parsed = JSON.parse(line) as { type?: string; payload?: { text?: string; enterRetryCount?: number; enterRetryInterval?: number } };
-          if (parsed.type === "feishu_input" && parsed.payload?.text) {
+          const parsed = JSON.parse(line) as { type?: string; payload?: { text?: string; enterRetryCount?: number; enterRetryInterval?: number; images?: string[] } };
+          if (parsed.type === "feishu_input" && (parsed.payload?.text || parsed.payload?.images?.length)) {
             // Simulate character-by-character typing to avoid Codex
             // PasteBurst detection, then retry Enter a few times.
             // Workaround for Windows ConPTY bug (microsoft/terminal#19674)
             // where \r stops being translated to VK_RETURN after TUI apps
             // switch console modes.
-            const text = parsed.payload.text;
+            const text = parsed.payload.text ?? "";
             const retryCount = parsed.payload?.enterRetryCount ?? 2;
             const retryInterval = parsed.payload?.enterRetryInterval ?? 500;
-            const chars = [...text];
-            let i = 0;
-            const typeNext = () => {
-              if (i < chars.length) {
-                ptyProcess.write(chars[i]);
-                i++;
-                setTimeout(typeNext, 10);
-              } else {
-                // All chars written (including trailing \r from daemon).
-                // Retry Enter: if first \r was swallowed, retries outside
-                // the burst window will submit. If already submitted,
-                // extra \r are harmlessly ignored in processing mode.
-                for (let r = 1; r <= retryCount; r++) {
-                  setTimeout(() => ptyProcess.write("\r"), retryInterval * r);
+            const images = parsed.payload.images;
+
+            // Image-only message: paste paths into input box, no Enter
+            if (images && images.length > 0) {
+              const pasteImages = (idx: number) => {
+                if (idx >= images.length) return;
+                ptyProcess.write(images[idx] + " ");
+                if (idx + 1 < images.length) {
+                  setTimeout(() => pasteImages(idx + 1), 100);
                 }
-              }
-            };
-            typeNext();
+              };
+              pasteImages(0);
+              // If no text, we're done (just pasting images into input box)
+              if (!text.trim()) return;
+              // If there is text too, wait for images to settle then type it
+              // (This shouldn't normally happen with the new flow)
+            }
+
+            // Text message: type character-by-character + Enter retries
+            if (text.trim()) {
+              const chars = [...text];
+              let i = 0;
+              const typeNext = () => {
+                if (i < chars.length) {
+                  ptyProcess.write(chars[i]);
+                  i++;
+                  setTimeout(typeNext, 10);
+                } else {
+                  for (let r = 1; r <= retryCount; r++) {
+                    setTimeout(() => ptyProcess.write("\r"), retryInterval * r);
+                  }
+                }
+              };
+              typeNext();
+            }
           }
         } catch {
           // ignore malformed payload
@@ -219,6 +308,10 @@ async function runCli(cli: string, args: string[]): Promise<void> {
     if (!connected || reconnecting) return;
     connected = false;
     daemonSocket = null;
+
+    // Clear proxy daemon socket reference
+    proxyDaemonRef.socket = null;
+    proxyDaemonRef.connected = false;
 
     if (sessionEnded) return;
 
@@ -327,6 +420,9 @@ async function runCli(cli: string, args: string[]): Promise<void> {
         // best-effort
       }
     }
+    if (proxyServer) {
+      proxyServer.close().catch(() => {});
+    }
     process.exit(0);
   });
 }
@@ -383,9 +479,10 @@ program
   .description("Felay — Feishu CLI Proxy")
   .command("run <cli> [args...]")
   .description("Run CLI in PTY and bridge to daemon")
+  .option("--proxy", "Enable API proxy mode for clean output capture")
   .allowUnknownOption(true)
-  .action(async (cli: string, args: string[] = []) => {
-    await runCli(cli, args);
+  .action(async (cli: string, args: string[] = [], opts: { proxy?: boolean }) => {
+    await runCli(cli, args, opts.proxy ?? false);
   });
 
 const daemon = program.command("daemon").description("Manage local daemon process");
