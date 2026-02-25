@@ -297,7 +297,7 @@ export interface ApiProxyEvent {
   type: "api_proxy_event";
   payload: {
     sessionId: string;
-    provider: "anthropic" | "openai";
+    provider: "anthropic" | "openai" | "google";
     model: string;
     stopReason: string;
     textContent: string;

@@ -124,7 +124,7 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false): 
   if (proxyMode) {
     const envConfig = getProxyEnvConfig(cli);
     if (!envConfig) {
-      process.stderr.write(`[felay] API proxy mode is not supported for "${cli}" (only claude and codex are supported)\n`);
+      process.stderr.write(`[felay] API proxy mode is not supported for "${cli}" (only claude, codex, and gemini are supported)\n`);
       process.exit(1);
     }
 
@@ -167,10 +167,9 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false): 
     // Set env var override (works for CLIs that respect env vars)
     proxyEnv[envConfig.envVar] = proxyUrl;
 
-    if (envConfig.provider === "anthropic") {
-      // Claude Code reads ANTHROPIC_BASE_URL from its own settings.json,
-      // overriding process env vars (anthropics/claude-code#8500).
-      // Use NODE_OPTIONS hook to monkey-patch fetch/http.request.
+    if (envConfig.provider === "anthropic" || envConfig.provider === "google") {
+      // Node.js CLIs (Claude Code, Gemini CLI): use NODE_OPTIONS hook
+      // to monkey-patch fetch/http.request and redirect to local proxy.
       const hookPath = writeHttpHook(proxyUrl, originalUpstream);
       const existingNodeOptions = process.env.NODE_OPTIONS || "";
       proxyEnv.NODE_OPTIONS = `--require ${JSON.stringify(hookPath)}${existingNodeOptions ? " " + existingNodeOptions : ""}`;

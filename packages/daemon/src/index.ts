@@ -213,7 +213,7 @@ const apiProxyEventSchema = z.object({
   type: z.literal("api_proxy_event"),
   payload: z.object({
     sessionId: z.string(),
-    provider: z.enum(["anthropic", "openai"]),
+    provider: z.enum(["anthropic", "openai", "google"]),
     model: z.string(),
     stopReason: z.string(),
     textContent: z.string(),
@@ -235,6 +235,12 @@ function isClaudeSession(cli: string): boolean {
   const base = cli.replace(/\\/g, "/").split("/").pop() || "";
   const name = base.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
   return name === "claude";
+}
+
+function isGeminiSession(cli: string): boolean {
+  const base = cli.replace(/\\/g, "/").split("/").pop() || "";
+  const name = base.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
+  return name === "gemini";
 }
 
 /** Sessions using hook-based notify (bypass PTY output parsing). */
@@ -891,8 +897,15 @@ async function handleMessage(
       }
     }
     // Codex: no auxiliary request filtering needed
+    // Gemini CLI: flash-lite is used for internal tasks (session title, summary)
+    if (isGeminiSession(cli)) {
+      if (model.includes("flash-lite")) {
+        console.log(`[felay] [gemini] skipping flash-lite request for ${sessionId}: ${textContent.slice(0, 50)}`);
+        return;
+      }
+    }
 
-    const tag = isClaudeSession(cli) ? "claude" : isCodexSession(cli) ? "codex" : "proxy";
+    const tag = isClaudeSession(cli) ? "claude" : isCodexSession(cli) ? "codex" : isGeminiSession(cli) ? "gemini" : "proxy";
     console.log(`[felay] [${tag}] api_proxy_event for ${sessionId}: model=${model}, stopReason=${stopReason}, textLen=${textContent.length}`);
 
     // ── Common message routing (same for all providers) ──

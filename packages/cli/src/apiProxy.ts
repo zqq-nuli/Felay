@@ -14,7 +14,7 @@ function proxyLog(msg: string): void {
 /* ── Types ── */
 
 export interface AssembledMessage {
-  provider: "anthropic" | "openai";
+  provider: "anthropic" | "openai" | "google";
   model: string;
   stopReason: string;
   textContent: string;
@@ -376,12 +376,113 @@ class ResponsesApiAssembler {
   }
 }
 
+/* ── Google Generative AI Assembler (Gemini CLI) ── */
+
+/**
+ * Parses Google's `streamGenerateContent?alt=sse` SSE format.
+ *
+ * Each SSE event (no `event:` field, data-only) is a `GenerateContentResponse`:
+ * ```json
+ * { "candidates": [{ "content": { "parts": [...] }, "finishReason": "STOP" }],
+ *   "modelVersion": "gemini-3.1-pro-preview", "usageMetadata": {...} }
+ * ```
+ *
+ * Parts can be:
+ *   - `{ text: "..." }` — text response
+ *   - `{ thought: true, text: "...", thoughtSignature: "..." }` — thinking (skipped)
+ *   - `{ functionCall: { name: "...", args: {...} } }` — tool call
+ */
+class GoogleAssembler {
+  private model = "";
+  private textContent = "";
+  private toolCalls: Array<{ name: string; arguments: string }> = [];
+  private finishReason = "";
+  private readonly onComplete: (msg: AssembledMessage) => void;
+
+  constructor(onComplete: (msg: AssembledMessage) => void) {
+    this.onComplete = onComplete;
+  }
+
+  feed(event: SseEvent): void {
+    let parsed: any;
+    try {
+      parsed = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+
+    // Extract model version (first event that has it)
+    if (parsed.modelVersion && !this.model) {
+      this.model = parsed.modelVersion;
+    }
+
+    const candidate = parsed.candidates?.[0];
+    if (!candidate) return;
+
+    // Track finish reason (typically only in the last chunk)
+    if (candidate.finishReason) {
+      this.finishReason = candidate.finishReason;
+    }
+
+    // Process content parts
+    const parts = candidate.content?.parts;
+    if (parts && Array.isArray(parts)) {
+      for (const part of parts) {
+        // Skip thinking parts
+        if (part.thought) continue;
+
+        // Text content
+        if (part.text) {
+          this.textContent += part.text;
+        }
+
+        // Function call (tool use)
+        if (part.functionCall) {
+          this.toolCalls.push({
+            name: part.functionCall.name ?? "",
+            arguments: JSON.stringify(part.functionCall.args ?? {}),
+          });
+        }
+      }
+    }
+
+    // Emit when we have a finish reason
+    if (this.finishReason) {
+      const hasTools = this.toolCalls.length > 0;
+      const hasText = this.textContent.trim().length > 0;
+      if (!hasTools && !hasText) return;
+
+      // If there's text, treat as end_turn (even if mixed with tool calls);
+      // if only tool calls, treat as tool_use.
+      const stopReason = hasTools && !hasText ? "tool_use" : "end_turn";
+
+      this.onComplete({
+        provider: "google",
+        model: this.model,
+        stopReason,
+        textContent: this.textContent,
+        toolUseBlocks: hasTools
+          ? this.toolCalls.map((tc) => ({ name: tc.name, input: tc.arguments }))
+          : undefined,
+        isSuggestion: false,
+        completedAt: new Date().toISOString(),
+      });
+
+      // Reset for next response
+      this.textContent = "";
+      this.toolCalls = [];
+      this.finishReason = "";
+      this.model = "";
+    }
+  }
+}
+
 /* ── CLI type detection ── */
 
 export function getProxyEnvConfig(cli: string): {
   envVar: string;
   defaultUpstream: string;
-  provider: "anthropic" | "openai";
+  provider: "anthropic" | "openai" | "google";
 } | null {
   const base = cli.replace(/\\/g, "/").split("/").pop() || "";
   const name = base.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
@@ -399,6 +500,14 @@ export function getProxyEnvConfig(cli: string): {
       envVar: "OPENAI_BASE_URL",
       defaultUpstream: "https://api.openai.com",
       provider: "openai",
+    };
+  }
+
+  if (name === "gemini") {
+    return {
+      envVar: "GOOGLE_GEMINI_BASE_URL",
+      defaultUpstream: "https://generativelanguage.googleapis.com",
+      provider: "google",
     };
   }
 
@@ -478,6 +587,15 @@ const PROXY_URL = ${JSON.stringify(proxyUrl)};
 const TARGET_ORIGIN = ${JSON.stringify(upstream.origin)};
 const TARGET_HOST = ${JSON.stringify(upstream.host)};
 
+// Debug: log hook loading to verify NODE_OPTIONS is working
+try {
+  const _fs = require('fs');
+  const _path = require('path');
+  const _os = require('os');
+  const _logFile = _path.join(_os.homedir(), '.felay', 'proxy-hook-debug.log');
+  _fs.appendFileSync(_logFile, '[' + new Date().toISOString() + '] proxy-hook loaded: TARGET=' + TARGET_ORIGIN + ' PROXY=' + PROXY_URL + '\\n');
+} catch (_) {}
+
 // --- Patch globalThis.fetch ---
 if (typeof globalThis.fetch === 'function') {
   const origFetch = globalThis.fetch;
@@ -491,6 +609,14 @@ if (typeof globalThis.fetch === 'function') {
       } else if (input && typeof input === 'object' && input.url) {
         url = input.url;
       }
+      // Debug: log every fetch call
+      try {
+        const _fs2 = require('fs');
+        const _path2 = require('path');
+        const _os2 = require('os');
+        const _logFile2 = _path2.join(_os2.homedir(), '.felay', 'proxy-hook-debug.log');
+        _fs2.appendFileSync(_logFile2, '[' + new Date().toISOString() + '] fetch: ' + (url || '(no url)').slice(0, 200) + ' match=' + (url ? url.startsWith(TARGET_ORIGIN) : false) + '\\n');
+      } catch (_) {}
       if (url && url.startsWith(TARGET_ORIGIN)) {
         const newUrl = PROXY_URL + url.slice(TARGET_ORIGIN.length);
         if (typeof input === 'string') {
@@ -538,7 +664,7 @@ for (const mod of ['http', 'https']) {
 /* ── HTTP Reverse Proxy ── */
 
 export async function startApiProxy(
-  config: { upstreamBaseUrl: string; provider: "anthropic" | "openai" },
+  config: { upstreamBaseUrl: string; provider: "anthropic" | "openai" | "google" },
   onMessage: (msg: AssembledMessage) => void
 ): Promise<{ port: number; close: () => Promise<void> }> {
   const upstream = new URL(config.upstreamBaseUrl);
@@ -607,6 +733,8 @@ export async function startApiProxy(
         let assembler: { feed(event: SseEvent): void };
         if (config.provider === "anthropic") {
           assembler = new AnthropicAssembler(onAssembled, isSuggestion);
+        } else if (config.provider === "google") {
+          assembler = new GoogleAssembler(onAssembled);
         } else if (isResponsesApi) {
           assembler = new ResponsesApiAssembler(onAssembled, isSuggestion);
         } else {
