@@ -167,13 +167,23 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false): 
     // Set env var override (works for CLIs that respect env vars)
     proxyEnv[envConfig.envVar] = proxyUrl;
 
-    // Write NODE_OPTIONS hook to redirect fetch/http requests through our proxy.
-    // This is needed because Claude Code reads ANTHROPIC_BASE_URL from its own
-    // settings.json, overriding process env vars (anthropics/claude-code#8500).
-    const hookPath = writeHttpHook(proxyUrl, originalUpstream);
-    const existingNodeOptions = process.env.NODE_OPTIONS || "";
-    proxyEnv.NODE_OPTIONS = `--require ${JSON.stringify(hookPath)}${existingNodeOptions ? " " + existingNodeOptions : ""}`;
-    plog(`NODE_OPTIONS=${proxyEnv.NODE_OPTIONS}`);
+    if (envConfig.provider === "anthropic") {
+      // Claude Code reads ANTHROPIC_BASE_URL from its own settings.json,
+      // overriding process env vars (anthropics/claude-code#8500).
+      // Use NODE_OPTIONS hook to monkey-patch fetch/http.request.
+      const hookPath = writeHttpHook(proxyUrl, originalUpstream);
+      const existingNodeOptions = process.env.NODE_OPTIONS || "";
+      proxyEnv.NODE_OPTIONS = `--require ${JSON.stringify(hookPath)}${existingNodeOptions ? " " + existingNodeOptions : ""}`;
+      plog(`NODE_OPTIONS=${proxyEnv.NODE_OPTIONS}`);
+    } else {
+      // Codex is a native Rust binary — NODE_OPTIONS hook is useless.
+      // Use HTTP_PROXY to intercept all HTTP requests from the native binary.
+      proxyEnv.HTTP_PROXY = proxyUrl;
+      proxyEnv.HTTPS_PROXY = proxyUrl;
+      proxyEnv.http_proxy = proxyUrl;
+      proxyEnv.https_proxy = proxyUrl;
+      plog(`native binary mode: HTTP_PROXY=${proxyUrl} upstream=${originalUpstream}`);
+    }
   }
 
   let resolvedCli = resolveWindowsCli(cli);

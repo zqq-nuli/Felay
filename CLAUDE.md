@@ -101,28 +101,30 @@ fn my_command() -> Value {
 
 有三种模式捕获 AI CLI 的回复，优先级从高到低：
 
-1. **API 代理模式**（`felay run --proxy claude`）：在 CLI 和 Anthropic API 之间插入本地 HTTP 反向代理，透明转发流量并旁路解析 SSE 流。获取结构化 API 响应，质量最高。
+1. **API 代理模式**（`felay run --proxy claude` / `felay run --proxy codex`）：在 CLI 和上游 API 之间插入本地 HTTP 代理，透明转发流量并旁路解析 SSE 流。获取结构化 API 响应，质量最高。
 2. **Hook 模式**：Codex 通过 `notify` 钩子（`scripts/felay-notify.js`）、Claude Code 通过 `Stop` 钩子（`scripts/felay-claude-notify.js`）直接将 AI 回复发送到 daemon。
 3. **PTY 输出解析**：xterm-headless 渲染 + extractResponseText 从终端输出中提取回复。质量最低，仅作为兜底。
 
-### API 代理模式（Claude Code）
+### API 代理模式
+
+代理模式为 Claude Code 和 Codex 提供独立的实现，共用代理基础设施但 SSE 解析和拦截机制完全隔离。
+
+#### Claude Code（`felay run --proxy claude`）
 
 ```
-felay run --proxy claude
-  CLI ──fetch──► http://127.0.0.1:PORT ──转发──► https://api.anthropic.com
-                       │ (tee: 旁路解析 SSE)
-                       ▼
-                   Assembler → api_proxy_event → daemon → 飞书
+CLI (Node.js) ──fetch──► http://127.0.0.1:PORT ──转发──► https://api.anthropic.com
+                              │ (tee: 旁路解析 SSE)
+                              ▼
+                      AnthropicAssembler → api_proxy_event → daemon → 飞书
 ```
 
-**工作原理**：
-1. 读取上游 URL（`ANTHROPIC_BASE_URL` 或 `~/.claude/settings.json` 中的配置，默认 `https://api.anthropic.com`）
-2. 启动本地 HTTP 反向代理（随机端口）
-3. 写入 `~/.felay/proxy-hook.cjs`（monkey-patch fetch/http.request），通过 `NODE_OPTIONS=--require` 注入 Claude Code 进程
-4. 代理透明转发请求/响应，同时旁路解析 SSE 流
-5. 每个 API 响应流完成后（`message_stop`），组装 `AssembledMessage` 发给 daemon
+**拦截机制**：Claude Code 是 Node.js 进程，通过 `NODE_OPTIONS=--require proxy-hook.cjs` 注入，monkey-patch `globalThis.fetch` 和 `http/https.request`，将发往上游的请求重定向到本地代理。
 
-**消息过滤规则**（daemon 侧）：
+**上游解析**：依次检查 `ANTHROPIC_BASE_URL` 环境变量 → `~/.claude/settings.json` 中的 env 配置 → 默认 `https://api.anthropic.com`。
+
+**SSE 解析**：`AnthropicAssembler` 处理 Anthropic Messages API 事件流（`message_start` → `content_block_delta` → `message_stop`）。
+
+**过滤规则**（daemon 侧，`[claude]` 标签）：
 
 | 条件 | 处理 |
 |------|------|
@@ -131,7 +133,31 @@ felay run --proxy claude
 | 主模型 + `stop_reason=tool_use` | 仅推送机器人（格式化显示工具名 + 关键参数） |
 | 主模型 + `stop_reason=end_turn` | 双向机器人（真实回复） + 推送机器人 |
 
-**Hook 与代理共存**：proxy 模式下，`codex_notify` / `claude_notify` hook 事件会被跳过（`skipping hook notify for proxy session`），避免重复发送。
+#### Codex（`felay run --proxy codex`）
+
+```
+CLI (Rust 原生二进制) ──HTTP_PROXY──► http://127.0.0.1:PORT ──转发──► upstream
+                                          │ (tee: 旁路解析 SSE)
+                                          ▼
+                                  ResponsesApiAssembler → api_proxy_event → daemon → 飞书
+```
+
+**拦截机制**：Codex CLI 是 Rust 编译的原生二进制（`codex.exe`），Node.js hook 无效。通过设置 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量拦截所有 HTTP 请求（Rust `reqwest` 库默认尊重这些变量）。
+
+**上游解析**：读取 `~/.codex/config.toml` 中活跃 `model_provider` 的 `base_url`（如 `http://192.168.1.20:8081`），而非默认的 `https://api.openai.com`。
+
+**SSE 解析**：`ResponsesApiAssembler` 处理 OpenAI Responses API 事件流（`response.created` → `response.output_text.delta` / `response.function_call_arguments.delta` → `response.completed`），与 Chat Completions API（`OpenAIAssembler`）完全不同。代理根据请求路径（`/responses`）自动选择 assembler。
+
+**容错**：上游返回 `stream_read_error` 时，如果已有累积文本，仍然发送部分内容（而非丢弃）。
+
+**过滤规则**（daemon 侧，`[codex]` 标签）：无特殊过滤。所有 `end_turn` 回复发送到双向+推送机器人，`tool_use` 仅发送到推送机器人。
+
+#### 共用部分
+
+- **`SseParser`**：通用 SSE 解析器，两者共用
+- **`AssembledMessage`** 类型：统一的组装输出格式（`provider`/`model`/`stopReason`/`textContent`/`toolUseBlocks`）
+- **消息路由**（daemon 侧）：`end_turn` → 双向+推送，`tool_use` → 仅推送。工具格式化提取 `command`/`file_path`/`pattern`/`query`/`workdir` 等字段，兼容两套工具体系。
+- **Hook 与代理共存**：proxy 模式下，`codex_notify` / `claude_notify` hook 事件会被跳过（`skipping hook notify for proxy session`），避免重复发送。
 
 ### 飞书消息接收
 
@@ -189,12 +215,18 @@ daemon 支持三种飞书消息类型：
 4. 在飞书中发送文字消息验证双向通信
 5. 在飞书中发送图片+文字组合消息（post 类型），验证图片和文字都被正确转发
 6. 在飞书中发送纯图片 → 再发文字，验证图片被附加到 CLI 输入
-7. **代理模式验证**：`felay run --proxy claude`
-   - 确认 haiku 请求被跳过（日志 `skipping haiku request`）
-   - 确认 suggestion 请求被跳过（日志 `skipping suggestion`）
+7. **Claude 代理模式验证**：`felay run --proxy claude`
+   - 确认 haiku 请求被跳过（日志 `[claude] skipping haiku request`）
+   - 确认 suggestion 请求被跳过（日志 `[claude] skipping suggestion`）
    - 确认 tool_use 仅发送到推送机器人
    - 确认 end_turn 发送到双向机器人（干净的 AI 回复，无终端噪声）
-8. 检查 daemon 控制台日志
+8. **Codex 代理模式验证**：`felay run --proxy codex`
+   - 确认代理读取了 `~/.codex/config.toml` 中的 `base_url`（日志 `resolved upstream from ~/.codex/config.toml`）
+   - 确认 HTTP_PROXY 拦截生效（`proxy-debug.log` 中出现 `REQUEST: POST http://...`）
+   - 确认 tool_use（如 `shell_command`）仅发送到推送机器人
+   - 确认文本回复发送到双向机器人
+   - 确认上游 `stream_read_error` 时部分文本仍被发送
+9. 检查 daemon 控制台日志
 
 ### 调试重启流程
 

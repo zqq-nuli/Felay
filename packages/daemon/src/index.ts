@@ -493,6 +493,7 @@ async function handleMessage(
   if (ended.success) {
     const sid = ended.data.payload.sessionId;
     const session = registry.get(sid);
+    console.log(`[felay] session_ended: ${sid} (cli=${session?.cli ?? "?"})`);
 
     registry.end(sid);
 
@@ -874,40 +875,47 @@ async function handleMessage(
     }
 
     const isEndTurn = (stopReason === "end_turn" || stopReason === "stop");
+    const cli = session.cli || "";
 
-    // ── Filter: skip internal auxiliary requests ──
-    // Claude Code uses haiku for internal tasks (warmup, file path extraction, etc.)
-    if (model.includes("haiku")) {
-      console.log(`[felay] skipping haiku request for ${sessionId}: ${textContent.slice(0, 50)}`);
-      return;
+    // ── Provider-specific filtering ──
+    if (isClaudeSession(cli)) {
+      // Claude Code uses haiku for internal tasks (warmup, file path extraction, etc.)
+      if (model.includes("haiku")) {
+        console.log(`[felay] [claude] skipping haiku request for ${sessionId}: ${textContent.slice(0, 50)}`);
+        return;
+      }
+      // Claude Code's "SUGGESTION MODE" predicts user's next input — not a real reply
+      if (isSuggestion) {
+        console.log(`[felay] [claude] skipping suggestion for ${sessionId}: ${textContent.slice(0, 50)}`);
+        return;
+      }
     }
-    // Claude Code's "SUGGESTION MODE" predicts user's next input — not a real reply
-    if (isSuggestion) {
-      console.log(`[felay] skipping suggestion for ${sessionId}: ${textContent.slice(0, 50)}`);
-      return;
-    }
+    // Codex: no auxiliary request filtering needed
 
-    console.log(`[felay] api_proxy_event for ${sessionId}: model=${model}, stopReason=${stopReason}, textLen=${textContent.length}`);
+    const tag = isClaudeSession(cli) ? "claude" : isCodexSession(cli) ? "codex" : "proxy";
+    console.log(`[felay] [${tag}] api_proxy_event for ${sessionId}: model=${model}, stopReason=${stopReason}, textLen=${textContent.length}`);
 
+    // ── Common message routing (same for all providers) ──
     if (isEndTurn && textContent.trim()) {
-      // ── Real reply: send to interactive bot + push bot ──
+      // Real reply: send to interactive bot + push bot
       void feishuManager.handleCodexNotify(sessionId, textContent, true);
       if (session.pushBotId && session.pushEnabled) {
         void feishuManager.sendPushCleanMessage(sessionId, textContent);
       }
     } else if (!isEndTurn && session.pushBotId && session.pushEnabled) {
-      // ── Tool use: push bot only, formatted ──
+      // Tool use: push bot only, formatted
       let pushText = textContent || "";
       if (toolUseBlocks?.length) {
         const toolLines = toolUseBlocks.map((t) => {
-          // Try to extract a human-readable summary from common tool inputs
           let detail = "";
           try {
             const input = JSON.parse(t.input);
-            if (input.command) detail = input.command;            // Bash
+            // Common fields across Claude tools and Codex tools
+            if (input.command) detail = input.command;            // Bash / shell_command
             else if (input.file_path) detail = input.file_path;  // Read/Edit/Write
             else if (input.pattern) detail = input.pattern;      // Grep/Glob
             else if (input.query) detail = input.query;          // WebSearch
+            else if (input.workdir) detail = input.workdir;      // Codex shell_command workdir
           } catch { /* not JSON or no known field */ }
           return detail ? `**Tool: ${t.name}**\n\`${detail}\`` : `**Tool: ${t.name}**`;
         });

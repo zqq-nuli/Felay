@@ -261,6 +261,121 @@ class OpenAIAssembler {
   }
 }
 
+/* ── OpenAI Responses API Assembler (Codex) ── */
+
+class ResponsesApiAssembler {
+  private model = "";
+  private textContent = "";
+  private toolCalls: Array<{ name: string; arguments: string }> = [];
+  // Track the function call currently being streamed
+  private currentFcName = "";
+  private currentFcArgs = "";
+  private inFunctionCall = false;
+  private readonly isSuggestion: boolean;
+  private readonly onComplete: (msg: AssembledMessage) => void;
+
+  constructor(onComplete: (msg: AssembledMessage) => void, isSuggestion: boolean) {
+    this.onComplete = onComplete;
+    this.isSuggestion = isSuggestion;
+  }
+
+  private flush(): void {
+    const hasTools = this.toolCalls.length > 0;
+    const hasText = this.textContent.length > 0;
+    if (!hasTools && !hasText) return; // Nothing to flush
+
+    const stopReason = hasTools && !hasText ? "tool_use" : "end_turn";
+    const toolUseBlocks = this.toolCalls.map((tc) => ({
+      name: tc.name,
+      input: tc.arguments,
+    }));
+
+    this.onComplete({
+      provider: "openai",
+      model: this.model,
+      stopReason,
+      textContent: this.textContent,
+      toolUseBlocks: toolUseBlocks.length > 0 ? toolUseBlocks : undefined,
+      isSuggestion: this.isSuggestion,
+      completedAt: new Date().toISOString(),
+    });
+
+    // Reset
+    this.textContent = "";
+    this.toolCalls = [];
+    this.model = "";
+    this.inFunctionCall = false;
+    this.currentFcName = "";
+    this.currentFcArgs = "";
+  }
+
+  feed(event: SseEvent): void {
+    let parsed: any;
+    try {
+      parsed = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+
+    switch (event.event) {
+      case "response.created": {
+        this.model = parsed.response?.model ?? "";
+        break;
+      }
+
+      case "response.output_item.added": {
+        const item = parsed.item;
+        if (item?.type === "function_call") {
+          this.inFunctionCall = true;
+          this.currentFcName = item.name ?? "";
+          this.currentFcArgs = "";
+        }
+        // reasoning and message types: no special tracking at start
+        break;
+      }
+
+      case "response.function_call_arguments.delta": {
+        if (this.inFunctionCall) {
+          this.currentFcArgs += parsed.delta ?? "";
+        }
+        break;
+      }
+
+      case "response.function_call_arguments.done": {
+        if (this.inFunctionCall) {
+          this.toolCalls.push({
+            name: this.currentFcName,
+            arguments: parsed.arguments ?? this.currentFcArgs,
+          });
+          this.inFunctionCall = false;
+          this.currentFcName = "";
+          this.currentFcArgs = "";
+        }
+        break;
+      }
+
+      case "response.output_text.delta": {
+        this.textContent += parsed.delta ?? "";
+        break;
+      }
+
+      case "response.completed": {
+        this.flush();
+        break;
+      }
+
+      // Upstream error (e.g. stream_read_error): flush any accumulated content
+      default: {
+        if (parsed?.type === "error" && this.textContent.length > 0) {
+          proxyLog(`ResponsesApiAssembler: upstream error, flushing ${this.textContent.length} bytes of partial text`);
+          this.flush();
+        }
+        break;
+      }
+    }
+  }
+}
+
 /* ── CLI type detection ── */
 
 export function getProxyEnvConfig(cli: string): {
@@ -304,7 +419,7 @@ export function resolveUpstream(envVar: string, defaultUpstream: string, cli: st
     return process.env[envVar]!;
   }
 
-  // 2. Claude Code settings.json
+  // 2. CLI-specific settings files
   const base = cli.replace(/\\/g, "/").split("/").pop() || "";
   const name = base.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
   if (name === "claude") {
@@ -317,6 +432,28 @@ export function resolveUpstream(envVar: string, defaultUpstream: string, cli: st
       }
     } catch {
       // settings file not found or invalid
+    }
+  }
+
+  // 2b. Codex config.toml — read active model_provider's base_url
+  if (name === "codex") {
+    try {
+      const configPath = path.join(os.homedir(), ".codex", "config.toml");
+      const content = fs.readFileSync(configPath, "utf8");
+      const providerMatch = content.match(/^model_provider\s*=\s*"([^"]+)"/m);
+      if (providerMatch) {
+        const providerName = providerMatch[1];
+        const sectionRe = new RegExp(
+          `\\[model_providers\\.${providerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\][\\s\\S]*?base_url\\s*=\\s*"([^"]+)"`
+        );
+        const urlMatch = content.match(sectionRe);
+        if (urlMatch) {
+          proxyLog(`resolved upstream from ~/.codex/config.toml [${providerName}]: ${urlMatch[1]}`);
+          return urlMatch[1];
+        }
+      }
+    } catch {
+      // config not found or invalid
     }
   }
 
@@ -408,25 +545,30 @@ export async function startApiProxy(
   const isUpstreamHttps = upstream.protocol === "https:";
 
   const server = http.createServer((clientReq, clientRes) => {
-    const targetUrl = new URL(clientReq.url ?? "/", config.upstreamBaseUrl);
+    const rawUrl = clientReq.url ?? "/";
+    // Forward proxy (HTTP_PROXY) sends full URL; reverse proxy sends relative path
+    const isForwardProxy = rawUrl.startsWith("http://") || rawUrl.startsWith("https://");
+    const targetUrl = isForwardProxy ? new URL(rawUrl) : new URL(rawUrl, config.upstreamBaseUrl);
+    const targetHttps = isForwardProxy ? targetUrl.protocol === "https:" : isUpstreamHttps;
 
     // Copy original headers, update host
     const headers: http.OutgoingHttpHeaders = { ...clientReq.headers };
     headers.host = targetUrl.host;
-    // Remove connection-specific headers that shouldn't be forwarded
+    // Remove connection-specific / proxy headers that shouldn't be forwarded
     delete headers["connection"];
+    delete headers["proxy-connection"];
 
     const reqOptions: http.RequestOptions | https.RequestOptions = {
       hostname: targetUrl.hostname,
-      port: targetUrl.port || (isUpstreamHttps ? 443 : 80),
+      port: targetUrl.port || (targetHttps ? 443 : 80),
       path: targetUrl.pathname + targetUrl.search,
       method: clientReq.method,
       headers,
     };
 
-    const transport = isUpstreamHttps ? https : http;
+    const transport = targetHttps ? https : http;
 
-    // Buffer request body for SSE dump
+    // Buffer request body for SSE dump and debug logging
     const reqBodyChunks: Buffer[] = [];
     clientReq.on("data", (chunk: Buffer) => {
       reqBodyChunks.push(chunk);
@@ -437,40 +579,57 @@ export async function startApiProxy(
       const statusCode = proxyRes.statusCode ?? 0;
       const isSse = contentType.includes("text/event-stream") && statusCode === 200;
 
-      proxyLog(`${clientReq.method} ${clientReq.url} → ${statusCode} content-type=${contentType} isSse=${isSse}`);
+      // ── Dump request details ──
+      const reqBody = Buffer.concat(reqBodyChunks).toString("utf8");
+      proxyLog(`\n${"=".repeat(80)}`);
+      proxyLog(`REQUEST: ${clientReq.method} ${clientReq.url}`);
+      proxyLog(`REQUEST HEADERS: ${JSON.stringify(clientReq.headers)}`);
+      proxyLog(`REQUEST BODY (${reqBody.length} bytes):\n${reqBody}`);
+      proxyLog(`RESPONSE: ${statusCode} content-type=${contentType} isSse=${isSse}`);
+      proxyLog(`RESPONSE HEADERS: ${JSON.stringify(proxyRes.headers)}`);
 
       // Forward status and headers transparently
       clientRes.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
 
       if (isSse) {
         // Detect suggestion mode from request body
-        const reqBody = Buffer.concat(reqBodyChunks).toString("utf8");
         const isSuggestion = reqBody.includes("SUGGESTION MODE");
 
         // Tee mode: stream to client AND parse SSE
         const parser = new SseParser();
-        const assembler = config.provider === "anthropic"
-          ? new AnthropicAssembler((msg) => {
-              proxyLog(`assembled: model=${msg.model} stopReason=${msg.stopReason} textLen=${msg.textContent.length} tools=${msg.toolUseBlocks?.length ?? 0} suggestion=${msg.isSuggestion}`);
-              onMessage(msg);
-            }, isSuggestion)
-          : new OpenAIAssembler((msg) => {
-              proxyLog(`assembled: model=${msg.model} stopReason=${msg.stopReason} textLen=${msg.textContent.length} tools=${msg.toolUseBlocks?.length ?? 0} suggestion=${msg.isSuggestion}`);
-              onMessage(msg);
-            }, isSuggestion);
+        const onAssembled = (msg: AssembledMessage) => {
+          proxyLog(`assembled: model=${msg.model} stopReason=${msg.stopReason} textLen=${msg.textContent.length} tools=${msg.toolUseBlocks?.length ?? 0} suggestion=${msg.isSuggestion}`);
+          onMessage(msg);
+        };
 
+        // Select assembler based on provider + API format
+        const isResponsesApi = targetUrl.pathname === "/responses" || targetUrl.pathname.endsWith("/responses");
+        let assembler: { feed(event: SseEvent): void };
+        if (config.provider === "anthropic") {
+          assembler = new AnthropicAssembler(onAssembled, isSuggestion);
+        } else if (isResponsesApi) {
+          assembler = new ResponsesApiAssembler(onAssembled, isSuggestion);
+        } else {
+          assembler = new OpenAIAssembler(onAssembled, isSuggestion);
+        }
+
+        let sseEventCount = 0;
         proxyRes.on("data", (chunk: Buffer) => {
           // Forward immediately to client (zero delay)
           clientRes.write(chunk);
 
-          // Feed to SSE parser
-          const events = parser.feed(chunk.toString("utf8"));
+          // Feed to SSE parser + dump each SSE event
+          const raw = chunk.toString("utf8");
+          const events = parser.feed(raw);
           for (const ev of events) {
+            sseEventCount++;
+            proxyLog(`SSE #${sseEventCount}: event=${ev.event} data=${ev.data}`);
             assembler.feed(ev);
           }
         });
 
         proxyRes.on("end", () => {
+          proxyLog(`SSE stream ended after ${sseEventCount} events`);
           clientRes.end();
         });
 
@@ -479,8 +638,17 @@ export async function startApiProxy(
           clientRes.end();
         });
       } else {
-        // Non-SSE: pipe directly
-        proxyRes.pipe(clientRes);
+        // Non-SSE: buffer response body for dump, then forward
+        const resBodyChunks: Buffer[] = [];
+        proxyRes.on("data", (chunk: Buffer) => {
+          resBodyChunks.push(chunk);
+          clientRes.write(chunk);
+        });
+        proxyRes.on("end", () => {
+          const resBody = Buffer.concat(resBodyChunks).toString("utf8");
+          proxyLog(`NON-SSE RESPONSE BODY (${resBody.length} bytes): ${resBody.slice(0, 4000)}`);
+          clientRes.end();
+        });
         proxyRes.on("error", (err) => {
           process.stderr.write(`[felay:proxy] upstream response error: ${err.message}\n`);
           clientRes.end();
