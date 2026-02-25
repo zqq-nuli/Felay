@@ -8,7 +8,9 @@ Thumbs.db
 *.log
 *.tmp
 *.swp
+*.bak
 .vscode/
 .idea/
 .env
 *.tsbuildinfo
+GEMINI.md
