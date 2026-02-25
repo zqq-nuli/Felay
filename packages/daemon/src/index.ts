@@ -375,19 +375,37 @@ async function main(): Promise<void> {
       }
     });
 
-    socket.on("close", () => {
+    const cleanupSocket = async () => {
       for (const sid of socketSessions) {
         socketMap.delete(sid);
-      }
-      socketSessions.clear();
-    });
 
-    socket.on("error", () => {
-      for (const sid of socketSessions) {
-        socketMap.delete(sid);
+        // If the session is still active (not "ended"), the CLI disconnected
+        // without sending session_ended (crash, force-kill, terminal closed).
+        // Perform the same cleanup as a normal session_ended event.
+        const session = registry.get(sid);
+        if (session && session.status !== "ended") {
+          console.log(`[felay] socket closed without session_ended, cleaning up: ${sid} (cli=${session.cli})`);
+          registry.end(sid);
+
+          await feishuManager.onSessionEnded(sid);
+
+          if (session.interactiveBotId) {
+            const stillUsed = registry
+              .list()
+              .some((s) => s.sessionId !== sid && s.interactiveBotId === session.interactiveBotId && s.status !== "ended");
+            if (!stillUsed) {
+              feishuManager.stopInteractiveBot(session.interactiveBotId);
+            }
+          }
+
+          registry.remove(sid);
+        }
       }
       socketSessions.clear();
-    });
+    };
+
+    socket.on("close", () => { void cleanupSocket(); });
+    socket.on("error", () => { void cleanupSocket(); });
   });
 
   server.listen(ipcPath, async () => {
