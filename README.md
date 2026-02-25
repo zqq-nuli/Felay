@@ -82,32 +82,48 @@ Felay 设计为通用 CLI 代理，目前重点支持以下三个 AI CLI 工具�
 
 ### 功能支持
 
-| 功能 | Codex | Gemini CLI | Claude Code |
-|------|:-----:|:----------:|:-----------:|
+| 功能 | Codex | Claude Code | Gemini CLI |
+|------|:-----:|:-----------:|:----------:|
 | 飞书发送文字 → CLI 输入 | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| AI 响应 → 飞书富文本回复 | :white_check_mark: Notify Hook | :white_check_mark: PTY 解析 | :white_check_mark: PTY 解析 |
+| 飞书发送图片 → CLI 输入 | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| 飞书发送富文本（图片+文字） → CLI | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| AI 响应 → 飞书富文本回复 | :white_check_mark: API 代理 | :white_check_mark: API 代理 | :white_check_mark: PTY 解析 |
 | 推送机器人（Webhook 输出推送） | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | 会话结束卡片通知 | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | Markdown → 飞书 Post 富文本渲染 | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 
 > **AI 响应获取方式：**
-> - **Notify Hook**（Codex 专用）：通过 Codex 的 `notify` 钩子直接获取 AI 原始回复文本，无需解析终端输出，响应更干净准确
-> - **PTY 解析**（通用方案）：通过虚拟终端渲染 + 文本提取从 PTY 输出中解析 AI 响应，适用于所有 CLI
+> - **API 代理**（默认，Codex / Claude Code）：在 CLI 和上游 API 之间插入本地 HTTP 代理，透明转发流量并旁路解析 SSE 流，获取结构化 API 响应，质量最高
+> - **PTY 解析**（兜底，`--pty` 标志启用）：通过虚拟终端渲染 + 文本提取从 PTY 输出中解析 AI 响应，适用于所有 CLI
+>
+> **飞书图片接收：** 飞书机器人需开通 `im:resource` 权限（开发者后台 → 权限管理），图片下载到 `~/.felay/images/<sessionId>/` 后注入 CLI 输入，会话结束时自动清理。
 
 ### 平台测试状态
 
-| 平台 | Codex | Gemini CLI | Claude Code |
-|------|:-----:|:----------:|:-----------:|
-| Windows | :white_check_mark: 已测试 | :grey_question: 待测试 | :grey_question: 待测试 |
+| 平台 | Codex | Claude Code | Gemini CLI |
+|------|:-----:|:-----------:|:----------:|
+| Windows | :white_check_mark: 已测试 | :white_check_mark: 已测试 | :grey_question: 待测试 |
 | macOS | :grey_question: 待测试 | :grey_question: 待测试 | :grey_question: 待测试 |
 | Linux | :grey_question: 待测试 | :grey_question: 待测试 | :grey_question: 待测试 |
+
+| 功能 | Windows | macOS | Linux |
+|------|:-------:|:-----:|:-----:|
+| Daemon 启动 / IPC | :white_check_mark: | :grey_question: | :grey_question: |
+| GUI (Tauri) | :white_check_mark: | :grey_question: | :grey_question: |
+| API 代理模式 | :white_check_mark: | :grey_question: | :grey_question: |
+| PTY 兜底模式 | :white_check_mark: | :grey_question: | :grey_question: |
+| 飞书文字消息收发 | :white_check_mark: | :grey_question: | :grey_question: |
+| 飞书图片 / 富文本消息 | :white_check_mark: | :grey_question: | :grey_question: |
+
+> 目前仅在 Windows 11 上完成了完整测试。macOS / Linux 理论上兼容（Unix Socket 替代 Named Pipe），但尚未实际验证。
 
 ### 使用示例
 
 ```bash
-felay run codex          # 包装 Codex
-felay run gemini         # 包装 Gemini CLI
-felay run claude         # 包装 Claude Code
+felay run codex          # 包装 Codex（默认 API 代理模式）
+felay run claude         # 包装 Claude Code（默认 API 代理模式）
+felay run gemini         # 包装 Gemini CLI（自动回退 PTY 解析）
+felay run --pty claude   # 强制使用 PTY 解析模式（兜底）
 ```
 
 ### 已知问题
@@ -194,11 +210,12 @@ felay run <command> [args...]
 示例：
 
 ```bash
-felay run echo hello
-felay run claude --project my-project
+felay run claude                        # API 代理模式（默认）
+felay run codex                         # API 代理模式（默认）
+felay run --pty claude --project my-project  # PTY 兜底模式
 ```
 
-CLI 会自动拉起 Daemon（如果未运行），通过 PTY 启动子进程并注册会话。
+CLI 会自动拉起 Daemon（如果未运行），通过 PTY 启动子进程并注册会话。默认使用 API 代理模式获取 AI 响应（质量更高），传 `--pty` 可回退到终端输出解析。
 
 ### 2. 管理 Daemon
 

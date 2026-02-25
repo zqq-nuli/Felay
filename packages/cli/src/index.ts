@@ -489,10 +489,10 @@ program
   .description("Felay — Feishu CLI Proxy")
   .command("run <cli> [args...]")
   .description("Run CLI in PTY and bridge to daemon")
-  .option("--proxy", "Enable API proxy mode for clean output capture")
+  .option("--pty", "Use PTY output parsing instead of API proxy (fallback mode)")
   .allowUnknownOption(true)
-  .action(async (cli: string, args: string[] = [], opts: { proxy?: boolean }) => {
-    await runCli(cli, args, opts.proxy ?? false);
+  .action(async (cli: string, args: string[] = [], opts: { pty?: boolean }) => {
+    await runCli(cli, args, !(opts.pty ?? false));
   });
 
 const daemon = program.command("daemon").description("Manage local daemon process");

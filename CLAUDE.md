@@ -101,15 +101,15 @@ fn my_command() -> Value {
 
 有三种模式捕获 AI CLI 的回复，优先级从高到低：
 
-1. **API 代理模式**（`felay run --proxy claude` / `felay run --proxy codex`）：在 CLI 和上游 API 之间插入本地 HTTP 代理，透明转发流量并旁路解析 SSE 流。获取结构化 API 响应，质量最高。
+1. **API 代理模式**（默认，`felay run claude` / `felay run codex`）：在 CLI 和上游 API 之间插入本地 HTTP 代理，透明转发流量并旁路解析 SSE 流。获取结构化 API 响应，质量最高。
 2. **Hook 模式**：Codex 通过 `notify` 钩子（`scripts/felay-notify.js`）、Claude Code 通过 `Stop` 钩子（`scripts/felay-claude-notify.js`）直接将 AI 回复发送到 daemon。
-3. **PTY 输出解析**：xterm-headless 渲染 + extractResponseText 从终端输出中提取回复。质量最低，仅作为兜底。
+3. **PTY 输出解析**（`felay run --pty claude`）：xterm-headless 渲染 + extractResponseText 从终端输出中提取回复。质量最低，仅作为兜底。需显式传 `--pty` 标志启用。
 
 ### API 代理模式
 
-代理模式为 Claude Code 和 Codex 提供独立的实现，共用代理基础设施但 SSE 解析和拦截机制完全隔离。
+代理模式为默认模式，Claude Code 和 Codex 提供独立的实现，共用代理基础设施但 SSE 解析和拦截机制完全隔离。
 
-#### Claude Code（`felay run --proxy claude`）
+#### Claude Code（`felay run claude`）
 
 ```
 CLI (Node.js) ──fetch──► http://127.0.0.1:PORT ──转发──► https://api.anthropic.com
@@ -133,7 +133,7 @@ CLI (Node.js) ──fetch──► http://127.0.0.1:PORT ──转发──► h
 | 主模型 + `stop_reason=tool_use` | 仅推送机器人（格式化显示工具名 + 关键参数） |
 | 主模型 + `stop_reason=end_turn` | 双向机器人（真实回复） + 推送机器人 |
 
-#### Codex（`felay run --proxy codex`）
+#### Codex（`felay run codex`）
 
 ```
 CLI (Rust 原生二进制) ──HTTP_PROXY──► http://127.0.0.1:PORT ──转发──► upstream
@@ -188,7 +188,7 @@ daemon 支持三种飞书消息类型：
 **正确的开发启动流程**：
 1. 先启动 daemon：`node packages/daemon/dist/index.js` 或 `pnpm run dev:daemon`
 2. 再启动 GUI：`pnpm run dev:gui`（会自动启动 Vite + Tauri 窗口）
-3. CLI 按需启动：`felay run claude` / `felay run codex` 等
+3. CLI 按需启动：`felay run claude` / `felay run codex`（默认代理模式），`felay run --pty claude`（PTY 兜底模式）
 
 **禁止**从项目根目录直接 `cargo tauri dev`（详见 ERRORS.md）。
 
@@ -211,22 +211,41 @@ daemon 支持三种飞书消息类型：
 无自动化测试。手动测试流程：
 1. 构建：`pnpm run build`
 2. 启动 daemon：`node packages/daemon/dist/index.js`（或 `pnpm dev:daemon`）
-3. 运行 CLI：`felay run claude` / `felay run --proxy claude`（或其他 AI CLI）
+3. 运行 CLI：`felay run claude` / `felay run codex`（默认代理模式）
 4. 在飞书中发送文字消息验证双向通信
 5. 在飞书中发送图片+文字组合消息（post 类型），验证图片和文字都被正确转发
 6. 在飞书中发送纯图片 → 再发文字，验证图片被附加到 CLI 输入
-7. **Claude 代理模式验证**：`felay run --proxy claude`
+7. **Claude 代理模式验证**：`felay run claude`
    - 确认 haiku 请求被跳过（日志 `[claude] skipping haiku request`）
    - 确认 suggestion 请求被跳过（日志 `[claude] skipping suggestion`）
    - 确认 tool_use 仅发送到推送机器人
    - 确认 end_turn 发送到双向机器人（干净的 AI 回复，无终端噪声）
-8. **Codex 代理模式验证**：`felay run --proxy codex`
+8. **Codex 代理模式验证**：`felay run codex`
    - 确认代理读取了 `~/.codex/config.toml` 中的 `base_url`（日志 `resolved upstream from ~/.codex/config.toml`）
    - 确认 HTTP_PROXY 拦截生效（`proxy-debug.log` 中出现 `REQUEST: POST http://...`）
    - 确认 tool_use（如 `shell_command`）仅发送到推送机器人
    - 确认文本回复发送到双向机器人
    - 确认上游 `stream_read_error` 时部分文本仍被发送
-9. 检查 daemon 控制台日志
+9. **PTY 兜底模式验证**：`felay run --pty claude`
+   - 确认 hook 被自动配置（日志 `Claude Code Stop hook 已自动配置`）
+   - 确认终端输出被解析并转发到飞书
+10. 检查 daemon 控制台日志
+
+### 平台测试状态
+
+| 功能 | Windows | macOS | Linux |
+|------|---------|-------|-------|
+| Daemon 启动/IPC | ✅ 已测试 | ❌ 未测试 | ❌ 未测试 |
+| GUI (Tauri) | ✅ 已测试 | ❌ 未测试 | ❌ 未测试 |
+| `felay run claude`（代理模式） | ✅ 已测试 | ❌ 未测试 | ❌ 未测试 |
+| `felay run codex`（代理模式） | ✅ 已测试 | ❌ 未测试 | ❌ 未测试 |
+| `felay run --pty claude`（PTY 模式） | ✅ 已测试 | ❌ 未测试 | ❌ 未测试 |
+| 飞书文字消息收发 | ✅ 已测试 | ❌ 未测试 | ❌ 未测试 |
+| 飞书图片消息接收 → CLI 输入 | ✅ 已测试 | ❌ 未测试 | ❌ 未测试 |
+| 飞书富文本（图片+文字）接收 | ✅ 已测试 | ❌ 未测试 | ❌ 未测试 |
+| ConPTY Enter 补发 | ✅ 已测试 | N/A | N/A |
+
+> 目前仅在 Windows 11 上完成了完整测试。macOS/Linux 理论上兼容（Unix Socket 替代 Named Pipe），但尚未实际验证。
 
 ### 调试重启流程
 
@@ -242,4 +261,4 @@ node -e "                                          # 杀掉旧 daemon
 node packages/daemon/dist/index.js > daemon-log.txt 2>&1 &   # 后台启动新 daemon
 ```
 
-CLI 侧需要退出旧的 `felay run claude` 并重新启动。
+CLI 侧需要退出旧的 `felay run claude` / `felay run codex` 并重新启动。
