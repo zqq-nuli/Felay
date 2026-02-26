@@ -1,6 +1,6 @@
 {
   "name": "felay",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "private": true,
   "license": "SEE LICENSE IN LICENSE",
   "packageManager": "pnpm@10.5.2",

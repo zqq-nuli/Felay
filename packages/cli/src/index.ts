@@ -19,15 +19,30 @@ import { ensureDaemonRunning, getLiveDaemonIpc } from "./daemonLifecycle.js";
 import { startApiProxy, getProxyEnvConfig, resolveUpstream, writeHttpHook } from "./apiProxy.js";
 import type { CheckCodexConfigResponse, SetupCodexConfigResponse, CheckClaudeConfigResponse, SetupClaudeConfigResponse } from "@felay/shared";
 
+/**
+ * Resolve a CLI name to an absolute path on Windows.
+ *
+ * conpty's C++ layer uses Windows SearchPath API which behaves unpredictably
+ * inside pkg snapshot environments. We MUST always return an absolute path
+ * so conpty never has to search for anything itself.
+ *
+ * Strategy (first match wins):
+ *   1. Already absolute / contains path separators → return as-is
+ *   2. `where` command → returns absolute paths from system PATH
+ *   3. Manual PATH + PATHEXT scan → handles cases where `where` fails in pkg
+ *   4. All failed → return bare name (pre-flight check will catch this)
+ */
 function resolveWindowsCli(cli: string): string {
   if (process.platform !== "win32") {
     return cli;
   }
 
+  // Already a path (absolute or relative with separators) — trust it
   if (path.isAbsolute(cli) || cli.includes("\\") || cli.includes("/")) {
     return cli;
   }
 
+  // Try `where` first — most reliable when it works
   const lookup = spawnSync("where", [cli], {
     encoding: "utf8",
     shell: true,
@@ -46,8 +61,7 @@ function resolveWindowsCli(cli: string): string {
   }
 
   // Fallback: manually search PATH with PATHEXT extensions.
-  // This handles cases where `where` fails inside pkg binaries or
-  // when conpty's native layer doesn't try Windows executable extensions.
+  // This handles cases where `where` fails inside pkg binaries.
   const pathExts = (process.env.PATHEXT || ".CMD;.EXE;.BAT;.COM")
     .split(";")
     .map((e) => e.trim())
@@ -64,6 +78,7 @@ function resolveWindowsCli(cli: string): string {
     }
   }
 
+  // All resolution failed — return bare name, pre-flight check will abort
   return cli;
 }
 
@@ -208,29 +223,36 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false): 
 
   process.stderr.write(`[felay] resolve: "${cli}" → "${resolvedCli}"\n`);
 
-  // On Windows, .cmd/.bat files cannot be executed directly by node-pty;
-  // they must be launched through cmd.exe /c
-  if (
-    process.platform === "win32" &&
-    /\.(cmd|bat)$/i.test(resolvedCli)
-  ) {
-    spawnArgs = ["/c", resolvedCli, ...args];
-    resolvedCli = "cmd.exe";
-  }
+  if (process.platform === "win32") {
+    // On Windows, .cmd/.bat files cannot be executed directly by node-pty;
+    // they must be launched through cmd.exe /c.
+    // Use ComSpec full path because conpty's C++ layer cannot resolve bare
+    // "cmd.exe" inside a pkg snapshot environment.
+    if (/\.(cmd|bat)$/i.test(resolvedCli)) {
+      const comspec = process.env.ComSpec || "C:\\Windows\\system32\\cmd.exe";
+      spawnArgs = ["/c", resolvedCli, ...args];
+      resolvedCli = comspec;
+    }
 
-  // Pre-flight check: verify the resolved executable exists before handing
-  // off to conpty, which gives an unhelpful "File not found:" error.
-  if (process.platform === "win32" && resolvedCli !== "cmd.exe") {
-    const exists = path.isAbsolute(resolvedCli)
-      ? fs.existsSync(resolvedCli)
-      : spawnSync("where", [resolvedCli], { encoding: "utf8", shell: true, windowsHide: true }).status === 0;
-    if (!exists) {
+    // Pre-flight: every path passed to pty.spawn() MUST be absolute.
+    // conpty's C++ SearchPath cannot resolve bare names in pkg snapshots.
+    if (!path.isAbsolute(resolvedCli)) {
       const msg = [
-        `[felay] fatal: '${cli}' not found.`,
-        `  resolved path: ${resolvedCli}`,
+        `[felay] fatal: '${cli}' could not be resolved to an absolute path.`,
+        `  resolved: ${resolvedCli}`,
         `  PATHEXT: ${process.env.PATHEXT || "(not set)"}`,
         `  PATH dirs searched: ${(process.env.PATH || "").split(";").length}`,
         `  Ensure '${cli}' is installed and available in your PATH.`,
+      ].join("\n");
+      process.stderr.write(msg + "\n");
+      process.exit(1);
+    }
+
+    // Verify the file actually exists on disk
+    if (!fs.existsSync(resolvedCli)) {
+      const msg = [
+        `[felay] fatal: '${cli}' resolved to '${resolvedCli}' but the file does not exist.`,
+        `  This may indicate a broken installation or stale PATH entry.`,
       ].join("\n");
       process.stderr.write(msg + "\n");
       process.exit(1);
