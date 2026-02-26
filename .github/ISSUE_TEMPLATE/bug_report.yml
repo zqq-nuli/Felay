@@ -1,0 +1,97 @@
+name: Bug 反馈
+description: 报告一个问题或异常行为
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你提交 Bug 反馈！请尽量详细填写以下信息，帮助我们快速定位和修复问题。
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: 问题模块
+      description: 问题出现在哪个模块？
+      options:
+        - Daemon（后台进程）
+        - CLI - felay run claude（代理模式）
+        - CLI - felay run codex（代理模式）
+        - CLI - felay run --pty（PTY 模式）
+        - GUI（Tauri 桌面应用）
+        - 飞书消息收发
+        - 飞书图片/富文本消息
+        - 配置 / 加密存储
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 简要描述遇到的问题
+      placeholder: 清晰地描述你遇到了什么问题
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请提供完整的复现步骤
+      placeholder: |
+        1. 启动 daemon：`node packages/daemon/dist/index.js`
+        2. 执行 `felay run claude`
+        3. 在飞书中发送消息 '...'
+        4. 出现错误 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      description: 描述你期望的正确行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 描述实际发生了什么
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Felay 版本
+      description: 运行 `felay --version` 查看
+      placeholder: "e.g. 0.1.1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 截图
+      description: |
+        请粘贴相关的 daemon 日志或截图。
+        Daemon 日志文件：`daemon-log.txt`，或从 daemon 控制台输出获取。
+      render: shell
+    validations:
+      required: false
