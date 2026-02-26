@@ -1,7 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
-import { Plus, Edit2, Trash2, Eye, EyeOff, Bot, Server, CheckCircle2, XCircle, AlertCircle } from "lucide-react";
+import { Plus, Edit2, Trash2, Eye, EyeOff, Bot, Server, CheckCircle2, XCircle, AlertCircle, Zap } from "lucide-react";
 import { useLocale } from "./i18n";
 import type { BotsData, InteractiveBot, PushBot, SessionItem } from "./types";
 
@@ -315,6 +315,16 @@ function InteractiveBotDialog({ bot, onClose, onSaved }: { bot?: InteractiveBot;
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [activating, setActivating] = useState(false);
+  const [activateCountdown, setActivateCountdown] = useState(0);
+  const [activateResult, setActivateResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (countdownRef.current) clearInterval(countdownRef.current);
+    };
+  }, []);
 
   const isEdit = !!bot;
 
@@ -351,6 +361,34 @@ function InteractiveBotDialog({ bot, onClose, onSaved }: { bot?: InteractiveBot;
     setTesting(false);
   };
 
+  const handleActivate = async () => {
+    if (!bot) return;
+    setActivating(true);
+    setActivateResult(null);
+    try {
+      const resp = await invoke<{ ok: boolean; error?: string }>("activate_bot", { botId: bot.id });
+      if (resp.ok) {
+        setActivateResult({ ok: true, msg: t("robots.activated") });
+        setActivateCountdown(30);
+        countdownRef.current = setInterval(() => {
+          setActivateCountdown((prev) => {
+            if (prev <= 1) {
+              if (countdownRef.current) clearInterval(countdownRef.current);
+              countdownRef.current = null;
+              return 0;
+            }
+            return prev - 1;
+          });
+        }, 1000);
+      } else {
+        setActivateResult({ ok: false, msg: `${t("robots.activateFailed")}: ${resp.error ?? t("common.unknown")}` });
+      }
+    } catch (e) {
+      setActivateResult({ ok: false, msg: `${t("robots.activateFailed")}: ${String(e)}` });
+    }
+    setActivating(false);
+  };
+
   return (
     <ModalContainer onClose={onClose}>
       <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-6">{isEdit ? t("robots.editInteractive") : t("robots.addInteractive")}</h3>
@@ -362,17 +400,39 @@ function InteractiveBotDialog({ bot, onClose, onSaved }: { bot?: InteractiveBot;
 
       {isEdit && (
         <div className="mb-4">
-          <motion.button
-            whileTap={{ scale: 0.96 }}
-            onClick={handleTest}
-            disabled={testing}
-            className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 dark:bg-white/10 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-white/20 transition-colors disabled:opacity-50"
-          >
-            {testing ? t("robots.testing") : t("robots.testConnection")}
-          </motion.button>
+          <div className="flex gap-2">
+            <motion.button
+              whileTap={{ scale: 0.96 }}
+              onClick={handleTest}
+              disabled={testing}
+              className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 dark:bg-white/10 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-white/20 transition-colors disabled:opacity-50"
+            >
+              {testing ? t("robots.testing") : t("robots.testConnection")}
+            </motion.button>
+            <motion.button
+              whileTap={{ scale: 0.96 }}
+              onClick={handleActivate}
+              disabled={activating || activateCountdown > 0}
+              className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 dark:bg-blue-500/10 rounded-lg text-sm font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-colors disabled:opacity-50 border-[0.5px] border-blue-200 dark:border-blue-500/20"
+            >
+              <Zap size={14} />
+              {activating
+                ? t("robots.activating")
+                : activateCountdown > 0
+                  ? `${t("robots.activated")} (${activateCountdown}s)`
+                  : t("robots.activate")}
+            </motion.button>
+          </div>
           {testResult && (
             <p className={`mt-2 text-xs font-medium flex items-center gap-1 ${testResult.ok ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
               {testResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />} {testResult.msg}
+            </p>
+          )}
+          {activateResult && (
+            <p className={`mt-2 text-xs font-medium flex items-center gap-1 ${activateResult.ok ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+              {activateResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+              {activateResult.msg}
+              {activateResult.ok && <span className="text-gray-500 dark:text-gray-400 ml-1">— {t("robots.activateHint")}</span>}
             </p>
           )}
         </div>

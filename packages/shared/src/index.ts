@@ -307,6 +307,18 @@ export interface ApiProxyEvent {
   };
 }
 
+/* ── Activate bot (temporary long connection) ── */
+
+export interface ActivateBotRequest {
+  type: "activate_bot_request";
+  payload: { botId: string };
+}
+
+export interface ActivateBotResponse {
+  type: "activate_bot_response";
+  payload: { ok: boolean; error?: string };
+}
+
 /* ── Claude Code config check/setup messages ── */
 
 export interface CheckClaudeConfigRequest {
@@ -374,6 +386,7 @@ export type DaemonMessage =
   | BindBotRequest
   | UnbindBotRequest
   | TestBotRequest
+  | ActivateBotRequest
   | GetConfigRequest
   | SaveConfigRequest
   | SetDefaultBotRequest
@@ -394,6 +407,7 @@ export type DaemonReply =
   | DeleteBotResponse
   | BindBotResponse
   | TestBotResponse
+  | ActivateBotResponse
   | GetConfigResponse
   | SaveConfigResponse
   | SetDefaultBotResponse

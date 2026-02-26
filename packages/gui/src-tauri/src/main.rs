@@ -13,7 +13,7 @@ use std::{env, os::unix::net::UnixStream};
 use std::{env, fs::OpenOptions};
 use tauri::{
   menu::{Menu, MenuItem},
-  tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+  tray::{MouseButton, MouseButtonState, TrayIconEvent},
   AppHandle, Manager,
 };
 use tauri_plugin_dialog::DialogExt;
@@ -437,6 +437,25 @@ fn test_bot(bot_type: String, bot_id: String) -> Value {
   let req = serde_json::json!({
     "type": "test_bot_request",
     "payload": { "botType": bot_type, "botId": bot_id }
+  });
+  let req_str = serde_json::to_string(&req).unwrap_or_default();
+
+  if let Some(resp) = ipc_request_typed::<GenericOkResponse>(&ipc_path, &req_str) {
+    serde_json::json!({ "ok": resp.payload.ok, "error": resp.payload.error })
+  } else {
+    serde_json::json!({ "ok": false, "error": "no response from daemon" })
+  }
+}
+
+#[tauri::command]
+fn activate_bot(bot_id: String) -> Value {
+  let Some(ipc_path) = get_ipc_path() else {
+    return serde_json::json!({ "ok": false, "error": "daemon not running" });
+  };
+
+  let req = serde_json::json!({
+    "type": "activate_bot_request",
+    "payload": { "botId": bot_id }
   });
   let req_str = serde_json::to_string(&req).unwrap_or_default();
 
@@ -950,6 +969,7 @@ fn main() {
       bind_bot,
       unbind_bot,
       test_bot,
+      activate_bot,
       get_config,
       save_config,
       start_daemon,
@@ -1010,31 +1030,30 @@ fn main() {
         }
       });
 
-      TrayIconBuilder::new()
-        .menu(&menu)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-          "open" => show_main_window(app),
-          "stop" => {
-            if daemon_stop() {
-              println!("[gui] stop daemon requested");
-            } else {
-              println!("[gui] daemon stop request failed");
-            }
+      let tray = app.tray_by_id("main").expect("tray icon 'main' not found");
+      tray.set_menu(Some(menu))?;
+      tray.on_menu_event(|app, event| match event.id.as_ref() {
+        "open" => show_main_window(app),
+        "stop" => {
+          if daemon_stop() {
+            println!("[gui] stop daemon requested");
+          } else {
+            println!("[gui] daemon stop request failed");
           }
-          "quit" => app.exit(0),
-          _ => {}
-        })
-        .on_tray_icon_event(|tray, event| {
-          if let TrayIconEvent::Click {
-            button: MouseButton::Left,
-            button_state: MouseButtonState::Up,
-            ..
-          } = event
-          {
-            show_main_window(tray.app_handle());
-          }
-        })
-        .build(app)?;
+        }
+        "quit" => app.exit(0),
+        _ => {}
+      });
+      tray.on_tray_icon_event(|tray, event| {
+        if let TrayIconEvent::Click {
+          button: MouseButton::Left,
+          button_state: MouseButtonState::Up,
+          ..
+        } = event
+        {
+          show_main_window(tray.app_handle());
+        }
+      });
 
       Ok(())
     })

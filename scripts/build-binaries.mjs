@@ -80,6 +80,29 @@ const nativeModulesPlugin = {
 const nodePtyWorkerPlugin = {
   name: "node-pty-workers",
   setup(build) {
+    // Patch node-pty's loadNativeModule to use absolute paths in pkg.
+    // Original code constructs relative paths like "./prebuilds/win32-x64//conpty.node"
+    // which fail inside pkg because (1) there's a double-slash bug and (2) relative
+    // paths resolve inside pkg's virtual snapshot, not the real filesystem.
+    build.onLoad(
+      { filter: /node-pty.*utils\.(js|ts)$/ },
+      async (args) => {
+        let contents = await fs.promises.readFile(args.path, "utf-8");
+        contents = contents.replace(
+          /function loadNativeModule\(name\)\s*\{/,
+          `function loadNativeModule(name) {
+  if (process.pkg) {
+    var _path = require('path');
+    var _execDir = _path.dirname(process.execPath);
+    var _prebuildsDir = _path.join(_execDir, 'prebuilds', process.platform + '-' + process.arch);
+    var _modulePath = _path.join(_prebuildsDir, name + '.node');
+    return { dir: _prebuildsDir + '/', module: require(_modulePath) };
+  }`
+        );
+        return { contents, loader: args.path.endsWith(".ts") ? "ts" : "js" };
+      }
+    );
+
     // For conpty_console_list_agent.js and conoutSocketWorker.js,
     // these are spawned as separate processes/threads. In pkg, they need
     // to be available on the real filesystem. We'll copy them as assets.

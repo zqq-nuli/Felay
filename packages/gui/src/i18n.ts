@@ -66,6 +66,13 @@ const dict: Record<string, Record<Locale, string>> = {
   "robots.deleteWarn": { zh: "此操作不可撤销。", en: "This action cannot be undone." },
   "robots.deleteBound": { zh: "该机器人当前绑定了 {count} 个活跃会话。删除后会自动解绑。", en: "This bot is currently bound to {count} active session(s). Deleting it will automatically unbind it from those sessions." },
 
+  // Activate bot
+  "robots.activate": { zh: "创建长连接", en: "Activate Connection" },
+  "robots.activating": { zh: "连接中...", en: "Connecting..." },
+  "robots.activated": { zh: "已连接", en: "Connected" },
+  "robots.activateFailed": { zh: "连接失败", en: "Connection Failed" },
+  "robots.activateHint": { zh: "首次使用需创建一次长连接以激活飞书端", en: "Required once to activate Feishu long connection" },
+
   // SettingsView
   "settings.title": { zh: "设置", en: "Settings" },
   "settings.daemonStopped": { zh: "Daemon 未运行。配置更改将在 Daemon 启动后生效。", en: "Daemon is not running. Configuration changes will take effect after the daemon starts." },

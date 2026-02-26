@@ -15,6 +15,7 @@ import {
   type DeleteBotResponse,
   type BindBotResponse,
   type TestBotResponse,
+  type ActivateBotResponse,
   type GetConfigResponse,
   type SaveConfigResponse,
   type SetDefaultBotResponse,
@@ -128,6 +129,11 @@ const testBotSchema = z.object({
     botType: z.enum(["interactive", "push"]),
     botId: z.string(),
   }),
+});
+
+const activateBotSchema = z.object({
+  type: z.literal("activate_bot_request"),
+  payload: z.object({ botId: z.string() }),
 });
 
 const getConfigSchema = z.object({ type: z.literal("get_config_request") });
@@ -330,6 +336,9 @@ async function main(): Promise<void> {
   // Clean up residual images from previous daemon runs
   await FeishuManager.cleanupImages();
 
+  /** Track per-bot activation timers to avoid duplicates (Bug #2 fix). */
+  const activationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   let stopping = false;
 
   const server = net.createServer((socket) => {
@@ -361,6 +370,7 @@ async function main(): Promise<void> {
           outputBuffer,
           socketMap,
           socketSessions,
+          activationTimers,
           () => {
             if (!stopping) {
               stopping = true;
@@ -434,6 +444,7 @@ async function handleMessage(
   outputBuffer: OutputBuffer,
   socketMap: Map<string, net.Socket>,
   socketSessions: Set<string>,
+  activationTimers: Map<string, ReturnType<typeof setTimeout>>,
   requestStop: () => void
 ): Promise<void> {
   /* ── M1 messages ── */
@@ -715,6 +726,58 @@ async function handleMessage(
       payload: result,
     };
     socket.write(toJsonLine(payload));
+    return;
+  }
+
+  /* ── Activate bot (temporary long connection) ── */
+
+  const activateBot = activateBotSchema.safeParse(parsed);
+  if (activateBot.success) {
+    const { botId } = activateBot.data.payload;
+    try {
+      await feishuManager.startInteractiveBot(botId);
+
+      // Verify the connection actually succeeded (startInteractiveBot swallows errors)
+      if (!feishuManager.isBotConnected(botId)) {
+        const payload: ActivateBotResponse = {
+          type: "activate_bot_response",
+          payload: { ok: false, error: "WSClient connection failed" },
+        };
+        socket.write(toJsonLine(payload));
+        return;
+      }
+
+      // Clear any existing activation timer for this bot before setting a new one
+      const existingTimer = activationTimers.get(botId);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+      }
+
+      // Auto-disconnect after 30 seconds if no session is using this bot
+      const timer = setTimeout(() => {
+        activationTimers.delete(botId);
+        const inUse = registry.list().some(
+          (s) => s.interactiveBotId === botId && s.status !== "ended"
+        );
+        if (!inUse) {
+          feishuManager.stopInteractiveBot(botId);
+          console.log(`[felay] temp activation expired: ${botId}`);
+        }
+      }, 30_000);
+      activationTimers.set(botId, timer);
+
+      const payload: ActivateBotResponse = {
+        type: "activate_bot_response",
+        payload: { ok: true },
+      };
+      socket.write(toJsonLine(payload));
+    } catch (e: any) {
+      const payload: ActivateBotResponse = {
+        type: "activate_bot_response",
+        payload: { ok: false, error: e?.message ?? String(e) },
+      };
+      socket.write(toJsonLine(payload));
+    }
     return;
   }
 
