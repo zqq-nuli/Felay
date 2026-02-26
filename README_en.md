@@ -10,7 +10,7 @@
 ---
 
 <p align="center">
-  <a href="#what-is-felay">About</a> · <a href="#features">Features</a> · <a href="#compatibility">Compatibility</a> · <a href="#architecture">Architecture</a> · <a href="#installation">Install</a> · <a href="#quick-start">Quick Start</a> · <a href="#configuration">Config</a> · <a href="#why-felay">Why Felay</a> · <a href="#license">License</a>
+  <a href="#what-is-felay">About</a> · <a href="#features">Features</a> · <a href="#compatibility">Compatibility</a> · <a href="#architecture">Architecture</a> · <a href="#installation">Install</a> · <a href="#quick-start">Quick Start</a> · <a href="#configuration">Config</a> · <a href="#feishu-bot-setup">Feishu Setup</a> · <a href="#why-felay">Why Felay</a> · <a href="#license">License</a>
 </p>
 
 ## What is Felay?
@@ -132,6 +132,65 @@ Config file: `~/.felay/config.json`
 | `input.enterRetryCount` | Enter key auto-retry count (Windows only) | 2 |
 
 Feishu bot credentials (App ID, App Secret, Webhook URL) are configured through the GUI and stored encrypted in `~/.felay/config.json`.
+
+## Feishu Bot Setup
+
+Felay uses two bots working together:
+
+- **Bidirectional Bot** — Pushes final AI replies and receives your messages, enabling two-way conversation
+- **Push Bot (Webhook)** — Pushes all messages including intermediate streaming output during processing
+
+### Bidirectional Bot
+
+### 1. Create an App
+
+Go to [Feishu Open Platform](https://open.feishu.cn/app) and create a new enterprise app.
+
+### 2. Add Bot Capability
+
+In the app details → **App Capabilities** → add **Bot**.
+
+### 3. Configure Permissions
+
+Go to **Permissions Management**, search `im:` to filter, and add all IM-related permissions:
+
+- App identity permissions (`tenant_access_token`)
+- User identity permissions (`user_access_token`)
+
+### 4. Publish the App
+
+After configuring permissions, create and publish the first version.
+
+### 5. Bind to Felay
+
+Open the Felay GUI, bind the bot (enter App ID and App Secret), and click **Create Long Connection**.
+
+### 6. Configure Event Callbacks
+
+Go back to Feishu Open Platform, enter the app details:
+
+**Event Callbacks** — Set request method to **Long Connection**, save, then add these events:
+- `im.chat.access_event.bot_p2p_chat_entered_v1` (bot enters P2P chat)
+- `im.message.message_read_v1` (message read)
+- `im.message.receive_v1` (receive message)
+
+**Callback Configuration** — Set request method to **Long Connection**, save, then add these callbacks:
+- `card.action.trigger` (card interaction)
+- `url.preview.get` (link preview)
+- `profile.view.get` (profile view)
+
+### 7. Start Using
+
+Once configured, search for your bot name in Feishu and send a message to start chatting.
+
+### Push Bot (Webhook)
+
+The push bot forwards all messages to a group chat, including tool calls and intermediate streaming output:
+
+1. Create a group chat in Feishu
+2. Group settings → **Bots** → Add **Custom Bot**
+3. Copy the generated Webhook URL
+4. Paste the Webhook URL in the Felay GUI
 
 ## Why Felay?
 

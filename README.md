@@ -10,7 +10,7 @@
 ---
 
 <p align="center">
-  <a href="#felay-是什么">简介</a> · <a href="#核心功能">功能</a> · <a href="#兼容性">兼容性</a> · <a href="#架构">架构</a> · <a href="#安装">安装</a> · <a href="#快速开始">快速开始</a> · <a href="#配置">配置</a> · <a href="#为什么做-felay">初衷</a> · <a href="#许可协议">许可</a>
+  <a href="#felay-是什么">简介</a> · <a href="#核心功能">功能</a> · <a href="#兼容性">兼容性</a> · <a href="#架构">架构</a> · <a href="#安装">安装</a> · <a href="#快速开始">快速开始</a> · <a href="#配置">配置</a> · <a href="#飞书机器人配置">飞书配置</a> · <a href="#为什么做-felay">初衷</a> · <a href="#许可协议">许可</a>
 </p>
 
 ## Felay 是什么？
@@ -132,6 +132,65 @@ felay daemon status
 | `input.enterRetryCount` | Enter 自动补发次数（仅 Windows） | 2 |
 
 飞书机器人的 App ID、App Secret、Webhook URL 等通过 GUI 界面配置，密钥加密后存储在 `~/.felay/config.json` 中。
+
+## 飞书机器人配置
+
+Felay 使用两种机器人配合工作：
+
+- **双向机器人** — 用于推送 AI 最终回复和接收你发送的消息，支持双向对话
+- **推送机器人（Webhook）** — 用于推送全部消息，包括中间过程的流式输出
+
+### 双向机器人
+
+### 1. 创建应用
+
+打开 [飞书开放平台](https://open.feishu.cn/app)，点击创建企业自建应用。
+
+### 2. 添加机器人能力
+
+进入应用详情 → **应用能力** → 添加 **机器人**。
+
+### 3. 配置权限
+
+进入 **权限管理**，搜索 `im:` 快速筛选，添加以下所有 IM 相关权限：
+
+- 应用身份权限（`tenant_access_token`）
+- 用户身份权限（`user_access_token`）
+
+### 4. 发布应用
+
+完成权限配置后，创建并发布第一个版本。
+
+### 5. 绑定到 Felay
+
+打开 Felay GUI 程序，绑定机器人（填入 App ID 和 App Secret），点击 **创建长连接**。
+
+### 6. 配置事件回调
+
+回到飞书开放平台，进入应用详情：
+
+**事件回调** — 请求方式选择 **长连接**，保存后添加以下事件：
+- `im.chat.access_event.bot_p2p_chat_entered_v1`（机器人进入单聊）
+- `im.message.message_read_v1`（消息已读）
+- `im.message.receive_v1`（接收消息）
+
+**回调配置** — 请求方式选择 **长连接**，保存后添加以下回调：
+- `card.action.trigger`（卡片交互）
+- `url.preview.get`（链接预览）
+- `profile.view.get`（个人信息查看）
+
+### 7. 开始使用
+
+配置完成后，在飞书中搜索你的机器人名称，发送消息即可开始对话。
+
+### 推送机器人（Webhook）
+
+推送机器人用于向群组推送全部消息，包括工具调用、中间流式输出等过程信息：
+
+1. 在飞书中创建一个群聊
+2. 群设置 → **机器人** → 添加 **自定义机器人**
+3. 复制生成的 Webhook 地址
+4. 在 Felay GUI 中填入该 Webhook 地址
 
 ## 为什么做 Felay？
 
