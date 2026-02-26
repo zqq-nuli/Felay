@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { program } from "commander";
 import pty from "node-pty";
+import fs from "node:fs";
+import os from "node:os";
 import net from "node:net";
 import { nanoid } from "nanoid";
 import { spawnSync } from "node:child_process";
@@ -132,11 +134,8 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false): 
     const originalUpstream = resolveUpstream(envConfig.envVar, envConfig.defaultUpstream, cli);
 
     // Debug logging to file (TUI overwrites stderr)
-    const fsSync = await import("node:fs");
-    const pathMod = await import("node:path");
-    const osMod = await import("node:os");
-    const proxyLogFile = pathMod.default.join(osMod.default.homedir(), ".felay", "proxy-debug.log");
-    const plog = (m: string) => { try { fsSync.default.appendFileSync(proxyLogFile, `[${new Date().toISOString()}] ${m}\n`); } catch {} };
+    const proxyLogFile = path.join(os.homedir(), ".felay", "proxy-debug.log");
+    const plog = (m: string) => { try { fs.appendFileSync(proxyLogFile, `[${new Date().toISOString()}] ${m}\n`); } catch {} };
 
     plog(`proxy starting: envVar=${envConfig.envVar} upstream=${originalUpstream} provider=${envConfig.provider}`);
 
