@@ -1,6 +1,6 @@
 [package]
 name = "felay-gui"
-version = "0.1.21"
+version = "0.1.22"
 description = "Felay — Feishu CLI Proxy GUI"
 authors = ["zqq"]
 license = "LicenseRef-SEE-LICENSE"
