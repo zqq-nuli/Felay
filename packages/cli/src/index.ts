@@ -34,18 +34,37 @@ function resolveWindowsCli(cli: string): string {
     windowsHide: true,
   });
 
-  if (lookup.status !== 0) {
-    return cli;
+  if (lookup.status === 0) {
+    const lines = lookup.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    // Prefer .cmd/.exe over extensionless POSIX shell scripts
+    const preferred = lines.find((l) => /\.(cmd|exe|bat)$/i.test(l));
+    if (preferred || lines[0]) return preferred || lines[0];
   }
 
-  const lines = lookup.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+  // Fallback: manually search PATH with PATHEXT extensions.
+  // This handles cases where `where` fails inside pkg binaries or
+  // when conpty's native layer doesn't try Windows executable extensions.
+  const pathExts = (process.env.PATHEXT || ".CMD;.EXE;.BAT;.COM")
+    .split(";")
+    .map((e) => e.trim())
+    .filter(Boolean);
+  const pathDirs = (process.env.PATH || "")
+    .split(";")
+    .map((d) => d.trim())
+    .filter(Boolean);
 
-  // Prefer .cmd/.exe over extensionless POSIX shell scripts
-  const preferred = lines.find((l) => /\.(cmd|exe|bat)$/i.test(l));
-  return preferred || lines[0] || cli;
+  for (const ext of pathExts) {
+    for (const dir of pathDirs) {
+      const full = path.join(dir, cli + ext);
+      if (fs.existsSync(full)) return full;
+    }
+  }
+
+  return cli;
 }
 
 function isCodexCli(cli: string): boolean {
