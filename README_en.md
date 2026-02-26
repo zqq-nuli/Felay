@@ -70,49 +70,44 @@ Felay operates strictly via local inter-process communication (Named Pipes on Wi
 └─────────────────────────────────┘
 ```
 
-## Prerequisites
+## Setup & Usage
+
+### Prerequisites
 - **Node.js** >= 18
 - **pnpm** >= 10
 - **Rust** (Required for building the GUI)
 
-## Installation
+### Installation
+1. **Windows Installer**: Download `.exe` from Releases.
+2. **Build from Source**:
+   ```bash
+   pnpm install
+   pnpm run build:all
+   ```
 
-### Windows Installer (Recommended)
-Download the `Felay_x.x.x_x64-setup.exe` installer from the releases page and install it.
-- Starts the GUI from the Start Menu or System Tray.
-- Registers the `felay` CLI command globally.
-
-### Build from Source
+### Quick Start
+Start a proxy session:
 ```bash
-git clone https://github.com/zqq-nuli/Felay.git
-cd Felay
-pnpm install
-pnpm run build:all    # Compile TS + build standalone binaries
-pnpm run build:gui    # Build NSIS installer
+felay run claude
 ```
-
-### Developer Setup (CLI Only)
-```bash
-pnpm run setup        # Install dependencies and link the CLI globally
-felay --help
-```
-
-## Usage
-
-Start a session by wrapping your standard AI CLI command:
-
-```bash
-felay run claude                        # Default API Proxy mode
-felay run codex                         # Default API Proxy mode
-felay run --pty claude --project my-app # Forced PTY fallback mode
-```
-
 Manage the Daemon manually:
 ```bash
-felay daemon start
 felay daemon status
-felay daemon stop
 ```
+
+## Configuration
+
+Settings are stored in `~/.felay/config.json`:
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `reconnect.maxRetries` | Maximum retries for Feishu WebSocket | 3 |
+| `push.mergeWindow` | Message merge window for push (ms) | 2000 |
+| `input.enterRetryCount` | Enter auto-retry count (Windows only) | 2 |
+
+## Known Issues
+
+**Windows ConPTY Bug**: Windows' ConPTY has a defect where `\r` may not translate to Enter during multi-turn chats. Felay mitigates this by auto-retrying Enter keys. macOS/Linux are not affected.
 
 ## License
 Custom Source-Available License — For personal, non-commercial use only. See [LICENSE](LICENSE) for details.
