@@ -2,6 +2,17 @@
 ; Called by Tauri's NSIS installer at various lifecycle stages.
 ; Uses direct registry manipulation (no external plugins required).
 
+!macro NSIS_HOOK_PREINSTALL
+  ; Kill running daemon/GUI before overwriting files (upgrade scenario).
+  ; Without this, Windows will refuse to overwrite locked executables.
+  nsExec::Exec 'taskkill /F /IM felay-daemon.exe'
+  Pop $0
+  nsExec::Exec 'taskkill /F /IM felay-gui.exe'
+  Pop $0
+  ; Brief pause to let Windows release file handles
+  Sleep 1000
+!macroend
+
 !macro NSIS_HOOK_POSTINSTALL
   ; Read current user PATH from registry
   ReadRegStr $0 HKCU "Environment" "Path"
