@@ -2,7 +2,7 @@
   <img src="./packages/gui/src-tauri/icons/logo-%E9%80%8F%E6%98%8E.png" alt="Felay Logo" width="150"/>
   <h1>Felay</h1>
   <p><strong>Feishu (Lark) + Relay</strong></p>
-  <p>包装本地 AI CLI 工具，与飞书机器人桥接，实现双向对话与输出推送。</p>
+  <p>将本地 AI CLI 桥接到飞书，实现双向对话和输出推送。</p>
 
   [English](./README_en.md) | 简体中文
 </div>
@@ -11,47 +11,41 @@
 
 ## Felay 是什么？
 
-**Felay** 是一个本地代理工具，旨在通过 `felay run ...` 包装并启动本地 AI CLI 会话（如 Codex, Gemini CLI, Claude Code），将本地终端与飞书（Lark）机器人无缝桥接。它支持通过飞书进行双向交互对话，以及向飞书群组单向推送终端输出，同时保持本地终端会话的完全可用性。
+Felay 通过 `felay run <command>` 包装本地 AI CLI（Codex / Claude Code / Gemini CLI），在本地终端和飞书机器人之间建立双向桥接。你可以在飞书里给 AI 发消息、接收回复，同时本地终端照常可用。
 
 ## 核心功能
 
-- **双向交互**：通过飞书 WSClient 长连接实现本地 CLI 与飞书双向实时对话。
-- **推送机器人**：Webhook 单向通知，支持智能的输出合并与限流处理。
-- **任务总结卡片**：会话结束时，自动向飞书发送包含最终执行结果的富文本卡片。
-- **高可用重连**：后台 Daemon 崩溃不会影响本地 PTY 进程，重启后自动恢复桥接。
-- **极简安全**：飞书机器人密钥采用 AES-256-GCM 加密，磁盘上始终密文存储。
-- **可视化管理**：基于 Tauri 的桌面 GUI，支持系统托盘、会话绑定、机器人管理与配置调整。
-- **健康监测**：WSClient 断连自动检测与警告通知机制。
+- **双向对话** — 飞书 WSClient 长连接，文字/图片/富文本消息双向互通
+- **Webhook 推送** — 单向通知，支持消息合并与限流
+- **API 代理捕获** — 在 CLI 和上游 API 间插入本地代理，旁路解析 SSE 流，获取结构化回复（默认模式）
+- **PTY 兜底解析** — 从终端输出中提取回复，适用于所有 CLI（需 `--pty` 标志）
+- **会话结束卡片** — 会话结束时自动发送富文本总结到飞书
+- **高可用** — Daemon 崩溃不影响本地 PTY，重启后自动恢复桥接
+- **加密存储** — 飞书密钥 AES-256-GCM 加密，磁盘上始终密文
+- **桌面 GUI** — Tauri 应用，系统托盘 + 会话管理 + 机器人配置
 
-## 兼容性与支持
-
-Felay 设计为通用 CLI 代理，目前重点支持以下三个 AI CLI 工具：
+## 兼容性
 
 | 功能 | Codex | Claude Code | Gemini CLI |
 |------|:-----:|:-----------:|:----------:|
-| 飞书发送文字 → CLI 输入 | ✅ | ✅ | ✅ |
-| 飞书发送图片 → CLI 输入 | ✅ | ✅ | ✅ |
+| 飞书文字 → CLI | ✅ | ✅ | ✅ |
+| 飞书图片 → CLI | ✅ | ✅ | ✅ |
 | 富文本（图文） → CLI | ✅ | ✅ | ✅ |
-| AI 响应 → 飞书回复 | ✅ API 代理 | ✅ API 代理 | ✅ PTY 解析 |
-| Webhook 输出推送 | ✅ | ✅ | ✅ |
-| 会话结束卡片通知 | ✅ | ✅ | ✅ |
-| Markdown → 飞书富文本 | ✅ | ✅ | ✅ |
+| AI 回复 → 飞书 | ✅ API 代理 | ✅ API 代理 | ✅ PTY 解析 |
+| Webhook 推送 | ✅ | ✅ | ✅ |
+| 会话结束通知 | ✅ | ✅ | ✅ |
 
-> **AI 响应获取机制：**
-> - **API 代理（默认）：** 在 CLI 和上游 API 之间插入本地 HTTP 代理，透明转发流量并旁路解析 SSE 流，获取结构化响应（质量最高）。
-> - **PTY 解析（兜底）：** 通过虚拟终端渲染与文本提取，直接从 PTY 输出中解析响应（适用于所有 CLI 工具）。
+### 平台状态
 
-### 平台测试状态
-
-| 平台 | Daemon / IPC | GUI (Tauri) | 代理与 PTY | 飞书消息收发 |
-|------|:------------:|:-----------:|:----------:|:------------:|
+| 平台 | Daemon / IPC | GUI | 代理 & PTY | 飞书消息 |
+|------|:------------:|:---:|:----------:|:--------:|
 | Windows | ✅ 已验证 | ✅ 已验证 | ✅ 已验证 | ✅ 已验证 |
 | macOS | ❓ 待测试 | ❓ 待测试 | ❓ 待测试 | ❓ 待测试 |
 | Linux | ❓ 待测试 | ❓ 待测试 | ❓ 待测试 | ❓ 待测试 |
 
-## 架构设计
+## 架构
 
-进程间通信完全采用 Named Pipe (Windows) 或 Unix Socket (macOS/Linux)，**不暴露任何网络 TCP 端口**。
+进程间通信使用 Named Pipe (Windows) 或 Unix Socket (macOS/Linux)，**不暴露任何 TCP 端口**。
 
 ```text
 ┌─────────────────────────────────┐
@@ -70,34 +64,62 @@ Felay 设计为通用 CLI 代理，目前重点支持以下三个 AI CLI 工具�
 └─────────────────────────────────┘
 ```
 
-## 安装与使用
+## 安装
 
 ### 环境要求
+
 - **Node.js** >= 18
 - **pnpm** >= 10
-- **Rust** (仅构建 GUI 需要)
+- **Rust**（仅构建 GUI 需要）
 
-### 安装指南
-1. **Windows 安装程序**：从 Releases 下载 `.exe` 安装包。
-2. **源码构建**：
-   ```bash
-   pnpm install
-   pnpm run build:all
-   ```
+### 方式一：Windows 安装包
 
-### 快速开始
-启动代理会话：
+从 [Releases](https://github.com/zqq-nuli/Felay/releases) 下载 `.exe` 安装程序。
+
+### 方式二：源码构建
+
 ```bash
-felay run claude
+git clone https://github.com/zqq-nuli/Felay.git
+cd Felay
+
+# 一键安装：安装依赖 + 编译 + 全局注册 felay 命令
+pnpm run setup
 ```
-手动管理后台服务：
+
+如果只需编译不注册全局命令：
+
+```bash
+pnpm install
+pnpm run build        # 编译 shared → daemon → cli
+```
+
+构建 GUI 桌面应用：
+
+```bash
+pnpm run build:gui    # 需要 Rust 环境
+```
+
+## 快速开始
+
+```bash
+# 1. 启动后台 Daemon
+node packages/daemon/dist/index.js
+
+# 2. 启动 CLI 代理会话（默认 API 代理模式）
+felay run claude      # 或 felay run codex / felay run gemini
+
+# 3. 在飞书中与机器人对话，消息会转发到本地 CLI
+```
+
+查看 Daemon 状态：
+
 ```bash
 felay daemon status
 ```
 
-## 配置说明
+## 配置
 
-配置文件位于 `~/.felay/config.json`：
+配置文件：`~/.felay/config.json`
 
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
@@ -105,16 +127,17 @@ felay daemon status
 | `push.mergeWindow` | 推送消息合并窗口（毫秒） | 2000 |
 | `input.enterRetryCount` | Enter 自动补发次数（仅 Windows） | 2 |
 
-## 待开发功能 (TODO)
+飞书机器人的 App ID、App Secret、Webhook URL 等通过 GUI 界面配置，密钥加密后存储在 `~/.felay/config.json` 中。
 
-我们计划在后续版本中引入以下特性，进一步补全与终端交互的深度，提升整体易用性：
+## TODO
 
-1. **交互式选项与提问确认**：当底层 AI CLI 触发需要用户进行列表选择或确认的交互式提问时，目前无法在飞书端直接操作。未来计划将此类复杂的终端 TUI 交互映射为飞书卡片的交互组件（如按钮、下拉菜单），实现无缝的远程选择与反馈。
-2. **多级命令与级联菜单支持**：针对部分 CLI 工具内置的多级命令体系（例如输入 `/model` 后展开的二级模型选择菜单），当前支持仍有局限。我们计划引入级联菜单的交互模式，完整支持复杂的二级或多级终端命令链路，大幅提升在飞书端下发复杂指令的灵活性。
+- [ ] **交互式选项映射** — 将 CLI 的 TUI 交互（列表选择、确认提示）映射为飞书卡片组件（按钮、下拉菜单）
+- [ ] **多级命令支持** — 支持 CLI 工具的级联菜单（如 `/model` → 模型选择），映射为飞书端的多级交互
 
 ## 已知问题
 
-**Windows ConPTY Bug**：Windows 的 ConPTY 存在已知缺陷，可能导致多轮对话中 Enter 键失效。Felay 已通过自动补发机制缓解此问题。macOS/Linux 不受此影响。
+**Windows ConPTY Bug**：ConPTY 存在已知缺陷（[microsoft/terminal#19674](https://github.com/microsoft/terminal/issues/19674)），多轮对话中 Enter 键可能失效。Felay 通过自动补发机制缓解。macOS/Linux 不受影响。
 
 ## 许可协议
+
 Custom Source-Available License — 仅限个人非商业使用。详见 [LICENSE](LICENSE)。

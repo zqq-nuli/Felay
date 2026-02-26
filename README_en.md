@@ -2,7 +2,7 @@
   <img src="./packages/gui/src-tauri/icons/logo-%E9%80%8F%E6%98%8E.png" alt="Felay Logo" width="150"/>
   <h1>Felay</h1>
   <p><strong>Feishu (Lark) + Relay</strong></p>
-  <p>Bridge local AI CLI tools with Feishu bots for bidirectional chat and output streaming.</p>
+  <p>Bridge local AI CLI tools to Feishu for bidirectional chat and output push.</p>
 
   English | [简体中文](./README.md)
 </div>
@@ -11,57 +11,51 @@
 
 ## What is Felay?
 
-**Felay** is a local proxy tool that bridges local AI CLI sessions (such as Codex, Gemini CLI, and Claude Code) with Feishu (Lark) bots. It allows developers to interact with their local AI CLI tools via Feishu messages (bidirectional chat) and push process output to a Feishu channel (one-way webhook push), all while keeping the local terminal session fully active and usable.
+Felay wraps local AI CLIs (Codex / Claude Code / Gemini CLI) via `felay run <command>`, bridging your local terminal with a Feishu (Lark) bot. Send messages to the AI from Feishu, receive replies back — while your local terminal stays fully usable.
 
-## Key Features
+## Features
 
-- **Bidirectional Chat:** Real-time bidirectional dialogue between CLI and Feishu via WebSockets.
-- **Webhook Push:** One-way notification push for process outputs, featuring intelligent message merging and rate limiting.
-- **Session Summaries:** Automatically sends a rich Feishu card containing the final output upon session completion.
-- **Resilient Connectivity:** Disconnecting the daemon won't crash your local PTY. Auto-reconnection restores the bridge seamlessly.
-- **Secure Credential Storage:** Feishu bot secrets are encrypted using AES-256-GCM and stored securely on your local disk.
-- **GUI Management:** A Tauri-based desktop app providing a system tray, session bindings, bot management, and visual configurations.
-- **Health Monitoring:** Continuous connection checks and automated warning notifications for WebSocket drops.
+- **Bidirectional Chat** — Real-time text/image/rich-text messaging between Feishu and CLI via WebSocket
+- **Webhook Push** — One-way notifications with message merging and rate limiting
+- **API Proxy Capture** — Local proxy between CLI and upstream API, intercepting SSE streams for structured responses (default mode)
+- **PTY Fallback** — Extracts replies from terminal output, works with any CLI (requires `--pty` flag)
+- **Session Summary Cards** — Sends a rich-text summary to Feishu when a session ends
+- **Resilient** — Daemon crashes don't affect local PTY; bridge auto-recovers on restart
+- **Encrypted Storage** — Feishu secrets encrypted with AES-256-GCM at rest
+- **Desktop GUI** — Tauri app with system tray, session management, and bot configuration
 
-## Compatibility & Support
-
-Felay is designed as a universal CLI proxy, currently optimized for three major AI CLI tools:
+## Compatibility
 
 | Feature | Codex | Claude Code | Gemini CLI |
 |---------|:-----:|:-----------:|:----------:|
-| Feishu Text → CLI Input | ✅ | ✅ | ✅ |
-| Feishu Image → CLI Input | ✅ | ✅ | ✅ |
+| Feishu Text → CLI | ✅ | ✅ | ✅ |
+| Feishu Image → CLI | ✅ | ✅ | ✅ |
 | Rich Text (Img+Text) → CLI | ✅ | ✅ | ✅ |
-| AI Response → Feishu Reply | ✅ API Proxy | ✅ API Proxy | ✅ PTY Parsing |
-| Webhook Output Push | ✅ | ✅ | ✅ |
-| Session End Notifications | ✅ | ✅ | ✅ |
-| Markdown → Feishu Rich Text | ✅ | ✅ | ✅ |
-
-> **AI Response Interception:**
-> - **API Proxy (Default):** Intercepts API calls (Codex / Claude Code) via a local HTTP proxy to capture structural responses natively.
-> - **PTY Parsing (Fallback):** Extracts responses directly from terminal output using virtual terminal rendering, available for any CLI.
+| AI Response → Feishu | ✅ API Proxy | ✅ API Proxy | ✅ PTY Parsing |
+| Webhook Push | ✅ | ✅ | ✅ |
+| Session End Notification | ✅ | ✅ | ✅ |
 
 ### Platform Status
 
-| Platform | Daemon / IPC | GUI (Tauri) | Proxy & PTY | Feishu Chat (Text & Image) |
-|----------|:------------:|:-----------:|:-----------:|:--------------------------:|
+| Platform | Daemon / IPC | GUI | Proxy & PTY | Feishu Chat |
+|----------|:------------:|:---:|:-----------:|:-----------:|
 | Windows | ✅ Verified | ✅ Verified | ✅ Verified | ✅ Verified |
 | macOS | ❓ Untested | ❓ Untested | ❓ Untested | ❓ Untested |
 | Linux | ❓ Untested | ❓ Untested | ❓ Untested | ❓ Untested |
 
 ## Architecture
 
-Felay operates strictly via local inter-process communication (Named Pipes on Windows, Unix Sockets on macOS/Linux) with **no exposed TCP ports**.
+All IPC uses Named Pipes (Windows) or Unix Sockets (macOS/Linux). **No TCP ports are exposed.**
 
 ```text
 ┌─────────────────────────────────┐
 │        Tauri GUI (Rust)         │
-│ System Tray · Session & Bots UI │
+│ System Tray · Sessions · Bots  │
 └────────────┬────────────────────┘
              │ Named Pipe / Unix Socket
 ┌────────────▼────────────────────┐
 │     Daemon (Node.js)            │
-│ Registry · Config · Routing     │
+│ Registry · Config · Routing    │
 └────────────▲────────────────────┘
              │ Named Pipe / Unix Socket
 ┌────────────┴────────────────────┐
@@ -70,51 +64,80 @@ Felay operates strictly via local inter-process communication (Named Pipes on Wi
 └─────────────────────────────────┘
 ```
 
-## Setup & Usage
+## Installation
 
 ### Prerequisites
+
 - **Node.js** >= 18
 - **pnpm** >= 10
-- **Rust** (Required for building the GUI)
+- **Rust** (only required for building the GUI)
 
-### Installation
-1. **Windows Installer**: Download `.exe` from Releases.
-2. **Build from Source**:
-   ```bash
-   pnpm install
-   pnpm run build:all
-   ```
+### Option 1: Windows Installer
 
-### Quick Start
-Start a proxy session:
+Download the `.exe` installer from [Releases](https://github.com/zqq-nuli/Felay/releases).
+
+### Option 2: Build from Source
+
 ```bash
-felay run claude
+git clone https://github.com/zqq-nuli/Felay.git
+cd Felay
+
+# One-step setup: install deps + build + register global felay command
+pnpm run setup
 ```
-Manage the Daemon manually:
+
+To build without registering the global command:
+
+```bash
+pnpm install
+pnpm run build        # Compiles shared → daemon → cli
+```
+
+To build the GUI desktop app:
+
+```bash
+pnpm run build:gui    # Requires Rust toolchain
+```
+
+## Quick Start
+
+```bash
+# 1. Start the background Daemon
+node packages/daemon/dist/index.js
+
+# 2. Start a CLI proxy session (API proxy mode by default)
+felay run claude      # or: felay run codex / felay run gemini
+
+# 3. Chat with the bot in Feishu — messages are relayed to your local CLI
+```
+
+Check Daemon status:
+
 ```bash
 felay daemon status
 ```
 
 ## Configuration
 
-Settings are stored in `~/.felay/config.json`:
+Config file: `~/.felay/config.json`
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `reconnect.maxRetries` | Maximum retries for Feishu WebSocket | 3 |
-| `push.mergeWindow` | Message merge window for push (ms) | 2000 |
-| `input.enterRetryCount` | Enter auto-retry count (Windows only) | 2 |
+| `reconnect.maxRetries` | Max reconnection attempts for Feishu WebSocket | 3 |
+| `push.mergeWindow` | Push message merge window (ms) | 2000 |
+| `input.enterRetryCount` | Enter key auto-retry count (Windows only) | 2 |
 
-## Planned Features (TODO)
+Feishu bot credentials (App ID, App Secret, Webhook URL) are configured through the GUI and stored encrypted in `~/.felay/config.json`.
 
-We are planning to introduce the following features in upcoming releases to deepen terminal interaction capabilities and improve overall usability:
+## TODO
 
-1. **Interactive Prompts & Selections:** When the underlying AI CLI triggers an interactive prompt that requires user selection from a list or confirmation, it cannot currently be operated directly from Feishu. We plan to map these complex terminal TUI interactions into Feishu interactive card components (e.g., buttons, dropdown menus) for seamless remote selection and feedback.
-2. **Multi-level Command & Cascading Menu Support:** Current support is limited for CLI tools that utilize a multi-level command structure (e.g., typing `/model` followed by a secondary menu to select a specific model). We plan to introduce cascading menu interaction modes to fully support complex, multi-level terminal command workflows, significantly enhancing the flexibility of issuing complex directives from Feishu.
+- [ ] **Interactive prompt mapping** — Map CLI TUI interactions (list selection, confirmation prompts) to Feishu card components (buttons, dropdowns)
+- [ ] **Multi-level command support** — Handle cascading CLI menus (e.g., `/model` → model picker) as multi-step Feishu interactions
 
 ## Known Issues
 
-**Windows ConPTY Bug**: Windows' ConPTY has a defect where `\r` may not translate to Enter during multi-turn chats. Felay mitigates this by auto-retrying Enter keys. macOS/Linux are not affected.
+**Windows ConPTY Bug**: ConPTY has a known defect ([microsoft/terminal#19674](https://github.com/microsoft/terminal/issues/19674)) where Enter keys may fail during multi-turn conversations. Felay mitigates this with automatic retry. macOS/Linux are not affected.
 
 ## License
-Custom Source-Available License — For personal, non-commercial use only. See [LICENSE](LICENSE) for details.
+
+Custom Source-Available License — Personal, non-commercial use only. See [LICENSE](LICENSE).
