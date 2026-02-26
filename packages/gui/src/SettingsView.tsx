@@ -1,11 +1,22 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
-import { Settings, Wifi, Network, Keyboard, Send, TerminalSquare, AlertCircle, CheckCircle2, RotateCcw, Save, FolderOpen } from "lucide-react";
+import { Settings, Wifi, Network, Keyboard, Send, TerminalSquare, AlertCircle, CheckCircle2, RotateCcw, Save, FolderOpen, PackageOpen, Download, FileArchive, ExternalLink } from "lucide-react";
 import { useLocale } from "./i18n";
 import type { AppConfig } from "./types";
 
 const springConfig = { type: "spring" as const, stiffness: 400, damping: 25 };
+
+/** Compare semver tags: returns true if `a` > `b` (strips leading 'v' and trailing '-beta' etc.) */
+function version_gt(a: string, b: string): boolean {
+  const parse = (s: string) => s.replace(/^v/, "").split("-")[0].split(".").map(Number);
+  const va = parse(a), vb = parse(b);
+  for (let i = 0; i < 3; i++) {
+    if ((va[i] ?? 0) > (vb[i] ?? 0)) return true;
+    if ((va[i] ?? 0) < (vb[i] ?? 0)) return false;
+  }
+  return false;
+}
 
 const defaultConfig: AppConfig = {
   bots: { interactive: [], push: [] },
@@ -36,6 +47,17 @@ export default function SettingsView({ daemonRunning }: { daemonRunning: boolean
   const [claudeScriptPath, setClaudeScriptPath] = useState("");
   const [claudeConfigPath, setClaudeConfigPath] = useState("");
 
+  // Update check state (with ETag caching)
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "up_to_date" | "has_update" | "error">("idle");
+  const [updateInfo, setUpdateInfo] = useState<{ currentVersion: string; latestVersion: string; releaseUrl: string; releaseNotes: string } | null>(null);
+  const [updateError, setUpdateError] = useState("");
+  const [appVersion] = useState(() => __APP_VERSION__);
+  const [cachedEtag, setCachedEtag] = useState("");
+
+  // Log export state
+  const [exporting, setExporting] = useState(false);
+  const [exportMessage, setExportMessage] = useState<{ text: string; ok: boolean } | null>(null);
+
   useEffect(() => {
     const load = async () => {
       try {
@@ -50,6 +72,17 @@ export default function SettingsView({ daemonRunning }: { daemonRunning: boolean
       }
     };
     load();
+
+    // Restore cached update check result from localStorage
+    try {
+      const raw = localStorage.getItem("felay-update-cache");
+      if (raw) {
+        const cached = JSON.parse(raw) as { etag: string; hasUpdate: boolean; latestVersion: string; releaseUrl: string; releaseNotes: string };
+        setCachedEtag(cached.etag);
+        setUpdateInfo({ currentVersion: appVersion, latestVersion: cached.latestVersion, releaseUrl: cached.releaseUrl, releaseNotes: cached.releaseNotes });
+        setUpdateStatus(cached.hasUpdate ? "has_update" : "up_to_date");
+      }
+    } catch { /* ignore corrupt cache */ }
   }, []);
 
   const checkCodexStatus = useCallback(async () => {
@@ -96,6 +129,72 @@ export default function SettingsView({ daemonRunning }: { daemonRunning: boolean
     checkCodexStatus();
     checkClaudeStatus();
   }, [checkCodexStatus, checkClaudeStatus]);
+
+  const handleCheckUpdate = async () => {
+    setUpdateStatus("checking");
+    setUpdateError("");
+    try {
+      const result = await invoke<{
+        not_modified: boolean; etag: string;
+        has_update: boolean; current_version: string;
+        latest_version: string; release_url: string; release_notes: string;
+      }>("check_update", { cachedEtag: cachedEtag || null });
+
+      if (result.not_modified) {
+        // 304 — cached data is still valid, just refresh status
+        if (updateInfo) {
+          setUpdateStatus(updateInfo.latestVersion ? (
+            version_gt(updateInfo.latestVersion, appVersion) ? "has_update" : "up_to_date"
+          ) : "up_to_date");
+        } else {
+          setUpdateStatus("up_to_date");
+        }
+        return;
+      }
+
+      // 200 — new data, update cache
+      setCachedEtag(result.etag);
+      const info = { currentVersion: result.current_version, latestVersion: result.latest_version, releaseUrl: result.release_url, releaseNotes: result.release_notes };
+      setUpdateInfo(info);
+      setUpdateStatus(result.has_update ? "has_update" : "up_to_date");
+
+      // Persist to localStorage for next session
+      localStorage.setItem("felay-update-cache", JSON.stringify({
+        etag: result.etag,
+        hasUpdate: result.has_update,
+        latestVersion: result.latest_version,
+        releaseUrl: result.release_url,
+        releaseNotes: result.release_notes,
+      }));
+    } catch (e) {
+      setUpdateError(String(e));
+      setUpdateStatus("error");
+    }
+  };
+
+  const handleExportLogs = async () => {
+    setExporting(true);
+    setExportMessage(null);
+    try {
+      const savedPath = await invoke<string>("collect_logs");
+      setExportMessage({ text: `${t("settings.exportDone")} ${savedPath}`, ok: true });
+      setTimeout(() => setExportMessage(null), 5000);
+    } catch (e) {
+      const msg = String(e);
+      if (msg.includes("cancelled") || msg.includes("User cancelled")) {
+        setExportMessage({ text: t("settings.exportCancelled"), ok: true });
+        setTimeout(() => setExportMessage(null), 3000);
+      } else {
+        setExportMessage({ text: `${t("settings.exportFailed")}: ${msg}`, ok: false });
+        setTimeout(() => setExportMessage(null), 8000);
+      }
+    }
+    setExporting(false);
+  };
+
+  const handleOpenUrl = async (url: string) => {
+    try { await invoke("open_url", { url }); } catch { /* ignore */ }
+  };
 
   if (!config) return <div className="flex justify-center py-20"><p className="text-gray-500">{t("settings.loading")}</p></div>;
 
@@ -259,6 +358,88 @@ export default function SettingsView({ daemonRunning }: { daemonRunning: boolean
             manualCode={`"hooks": { "Stop": [{ "matcher": "", "hooks": [{ "type": "command", "command": "node ${claudeScriptPath}" }] }] }`}
             manualHint="Add hooks configuration in settings.json:"
           />
+        </SettingsCard>
+        {/* About & Updates */}
+        <SettingsCard title={t("settings.about")} icon={<PackageOpen className="text-indigo-500" />} className="flex flex-col gap-4">
+          {/* Version info */}
+          <div className="flex flex-col gap-3 p-3 bg-gray-50 dark:bg-white/5 rounded-xl border-[0.5px] border-black/5 dark:border-white/10">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{t("settings.currentVersion")}</span>
+              <span className="text-sm font-mono font-medium text-gray-800 dark:text-gray-200">
+                v{appVersion}
+              </span>
+            </div>
+            {updateInfo && (updateStatus === "has_update" || updateStatus === "up_to_date") && (
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{t("settings.latestVersion")}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-mono font-medium text-gray-800 dark:text-gray-200">
+                    {updateInfo.latestVersion}
+                  </span>
+                  {updateStatus === "has_update" && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border-[0.5px] bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border-green-200 dark:border-green-800">
+                      {t("settings.newVersion")}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+            {updateStatus === "up_to_date" && (
+              <p className="text-xs text-green-600 dark:text-green-400 font-medium flex items-center gap-1">
+                <CheckCircle2 size={14} /> {t("settings.upToDate")}
+              </p>
+            )}
+            {updateStatus === "error" && (
+              <p className="text-xs text-red-500 font-medium flex items-center gap-1">
+                <AlertCircle size={14} /> {t("settings.checkFailed")}: {updateError}
+              </p>
+            )}
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex flex-wrap items-center gap-3">
+            <motion.button
+              whileTap={{ scale: 0.95 }}
+              onClick={handleCheckUpdate}
+              disabled={updateStatus === "checking"}
+              className="flex items-center gap-2 px-4 py-2 bg-indigo-500 text-white rounded-xl text-sm font-medium hover:bg-indigo-600 transition-colors disabled:opacity-50 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.2)]"
+            >
+              <Download size={16} />
+              {updateStatus === "checking" ? t("settings.checking") : t("settings.checkUpdate")}
+            </motion.button>
+            {updateStatus === "has_update" && updateInfo?.releaseUrl && (
+              <motion.button
+                whileTap={{ scale: 0.95 }}
+                onClick={() => handleOpenUrl(updateInfo.releaseUrl)}
+                className="flex items-center gap-2 px-4 py-2 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 transition-colors shadow-[inset_0_1px_0_0_rgba(255,255,255,0.2)]"
+              >
+                <ExternalLink size={16} /> {t("settings.download")}
+              </motion.button>
+            )}
+          </div>
+
+          {/* Divider */}
+          <div className="border-t border-black/5 dark:border-white/10" />
+
+          {/* Log export */}
+          <div className="flex flex-col gap-2">
+            <p className="text-xs text-gray-500 dark:text-gray-400">{t("settings.exportLogsHint")}</p>
+            {exportMessage && (
+              <div className="flex items-center gap-2 text-xs font-medium">
+                {exportMessage.ok ? <CheckCircle2 size={14} className="text-green-500 shrink-0" /> : <AlertCircle size={14} className="text-red-500 shrink-0" />}
+                <span className={exportMessage.ok ? "text-green-600 dark:text-green-400" : "text-red-500"} style={{ wordBreak: "break-all" }}>{exportMessage.text}</span>
+              </div>
+            )}
+            <motion.button
+              whileTap={{ scale: 0.95 }}
+              onClick={handleExportLogs}
+              disabled={exporting}
+              className="flex items-center gap-2 px-4 py-2 bg-gray-100 dark:bg-white/10 text-gray-700 dark:text-gray-200 rounded-xl text-sm font-medium hover:bg-gray-200 dark:hover:bg-white/20 transition-colors disabled:opacity-50 self-start"
+            >
+              <FileArchive size={16} />
+              {exporting ? t("settings.exporting") : t("settings.exportLogs")}
+            </motion.button>
+          </div>
         </SettingsCard>
       </div>
 

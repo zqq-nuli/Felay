@@ -16,6 +16,9 @@ use tauri::{
   tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
   AppHandle, Manager,
 };
+use tauri_plugin_dialog::DialogExt;
+use zip::write::SimpleFileOptions;
+use zip::ZipWriter;
 
 /* ── Structs ── */
 
@@ -98,6 +101,17 @@ struct DaemonLockFile {
   ipc: String,
 }
 
+#[derive(Debug, Serialize)]
+struct UpdateInfo {
+  not_modified: bool,
+  etag: String,
+  has_update: bool,
+  current_version: String,
+  latest_version: String,
+  release_url: String,
+  release_notes: String,
+}
+
 /* ── Generic IPC response wrappers ── */
 
 #[derive(Debug, Deserialize)]
@@ -146,6 +160,59 @@ fn get_ipc_path() -> Option<String> {
   read_lock_file()
     .map(|lock| lock.ipc)
     .or_else(default_ipc_path)
+}
+
+/// Compare two semver strings: returns true if `a` > `b`.
+fn version_gt(a: &str, b: &str) -> bool {
+  let parse = |s: &str| -> Vec<u64> {
+    s.split('.').filter_map(|p| p.parse().ok()).collect()
+  };
+  let va = parse(a);
+  let vb = parse(b);
+  for i in 0..3 {
+    let a_part = va.get(i).copied().unwrap_or(0);
+    let b_part = vb.get(i).copied().unwrap_or(0);
+    if a_part > b_part {
+      return true;
+    }
+    if a_part < b_part {
+      return false;
+    }
+  }
+  false
+}
+
+/// Remove sensitive fields from a config JSON string.
+fn sanitize_config(raw: &str) -> String {
+  if let Ok(mut json) = serde_json::from_str::<Value>(raw) {
+    sanitize_value(&mut json);
+    serde_json::to_string_pretty(&json).unwrap_or_else(|_| raw.to_string())
+  } else {
+    raw.to_string()
+  }
+}
+
+fn sanitize_value(value: &mut Value) {
+  const SENSITIVE: &[&str] = &["appSecret", "encryptKey", "secret", "webhook"];
+  match value {
+    Value::Object(map) => {
+      for (k, v) in map.iter_mut() {
+        if SENSITIVE.iter().any(|s| k.contains(s)) {
+          if v.is_string() && !v.as_str().unwrap_or("").is_empty() {
+            *v = Value::String("***".to_string());
+          }
+        } else {
+          sanitize_value(v);
+        }
+      }
+    }
+    Value::Array(arr) => {
+      for v in arr.iter_mut() {
+        sanitize_value(v);
+      }
+    }
+    _ => {}
+  }
 }
 
 /// Send a JSON-line request to the daemon and read one JSON-line reply.
@@ -655,6 +722,185 @@ fn open_claude_config_file() -> Value {
   }
 }
 
+#[tauri::command]
+async fn check_update(cached_etag: Option<String>) -> Result<UpdateInfo, String> {
+  let current = env!("CARGO_PKG_VERSION");
+
+  let client = reqwest::Client::builder()
+    .user_agent("Felay-Updater")
+    .timeout(Duration::from_secs(15))
+    .build()
+    .map_err(|e| e.to_string())?;
+
+  let mut req = client.get("https://api.github.com/repos/zqq-nuli/Felay/releases/latest");
+
+  // ETag conditional request — 304 responses don't count against rate limit
+  if let Some(ref etag) = cached_etag {
+    if !etag.is_empty() {
+      req = req.header("If-None-Match", etag.as_str());
+    }
+  }
+
+  let resp = req.send().await.map_err(|e| e.to_string())?;
+
+  // 304 Not Modified — cached data is still valid
+  if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+    return Ok(UpdateInfo {
+      not_modified: true,
+      etag: cached_etag.unwrap_or_default(),
+      has_update: false,
+      current_version: current.to_string(),
+      latest_version: String::new(),
+      release_url: String::new(),
+      release_notes: String::new(),
+    });
+  }
+
+  if !resp.status().is_success() {
+    return Err(format!("GitHub API returned {}", resp.status()));
+  }
+
+  // Extract ETag from response headers before consuming the body
+  let etag = resp
+    .headers()
+    .get("etag")
+    .and_then(|v| v.to_str().ok())
+    .unwrap_or("")
+    .to_string();
+
+  let json: Value = resp.json().await.map_err(|e| e.to_string())?;
+
+  let tag = json["tag_name"].as_str().unwrap_or("v0.0.0");
+  // tag_name is like "v0.1.0-beta" — extract the numeric version part
+  let latest = tag
+    .trim_start_matches('v')
+    .split('-')
+    .next()
+    .unwrap_or("0.0.0");
+
+  Ok(UpdateInfo {
+    not_modified: false,
+    etag,
+    has_update: version_gt(latest, current),
+    current_version: current.to_string(),
+    latest_version: tag.to_string(),
+    release_url: json["html_url"].as_str().unwrap_or("").to_string(),
+    release_notes: json["body"].as_str().unwrap_or("").to_string(),
+  })
+}
+
+#[tauri::command]
+fn collect_logs(app: AppHandle) -> Result<String, String> {
+  let home = get_home_dir().ok_or("Cannot determine home directory")?;
+  let felay_dir = PathBuf::from(&home).join(".felay");
+
+  let now = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_secs();
+  let default_name = format!("felay-logs-{}.zip", now);
+
+  // Show native save-file dialog
+  let save_path = app
+    .dialog()
+    .file()
+    .set_file_name(&default_name)
+    .add_filter("ZIP", &["zip"])
+    .blocking_save_file()
+    .ok_or("User cancelled")?;
+
+  let save_path = save_path
+    .into_path()
+    .map_err(|_| "Invalid save path".to_string())?;
+
+  let file =
+    fs::File::create(&save_path).map_err(|e| format!("Cannot create file: {}", e))?;
+  let mut zip = ZipWriter::new(file);
+  let options =
+    SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+  // Collect log files
+  for name in ["daemon.json", "proxy-debug.log", "proxy-hook-debug.log"] {
+    let path = felay_dir.join(name);
+    if path.exists() {
+      if let Ok(content) = fs::read(&path) {
+        zip
+          .start_file(name, options)
+          .map_err(|e| format!("zip start_file '{}': {}", name, e))?;
+        zip
+          .write_all(&content)
+          .map_err(|e| format!("zip write '{}': {}", name, e))?;
+      }
+    }
+  }
+
+  // Sanitized config.json (sensitive fields replaced with ***)
+  let config_path = felay_dir.join("config.json");
+  if config_path.exists() {
+    if let Ok(raw) = fs::read_to_string(&config_path) {
+      let sanitized = sanitize_config(&raw);
+      zip
+        .start_file("config-sanitized.json", options)
+        .map_err(|e| format!("zip start_file config: {}", e))?;
+      zip
+        .write_all(sanitized.as_bytes())
+        .map_err(|e| format!("zip write config: {}", e))?;
+    }
+  }
+
+  // System information
+  let sysinfo = format!(
+    "App Version: {}\nOS: {}\nArch: {}\nDaemon Lock Exists: {}\nTimestamp: {}",
+    env!("CARGO_PKG_VERSION"),
+    std::env::consts::OS,
+    std::env::consts::ARCH,
+    felay_dir.join("daemon.json").exists(),
+    now,
+  );
+  zip
+    .start_file("system-info.txt", options)
+    .map_err(|e| format!("zip start_file sysinfo: {}", e))?;
+  zip
+    .write_all(sysinfo.as_bytes())
+    .map_err(|e| format!("zip write sysinfo: {}", e))?;
+
+  zip
+    .finish()
+    .map_err(|e| format!("Failed to finalize zip: {}", e))?;
+
+  Ok(save_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn open_url(url: String) -> Value {
+  // Validate URL scheme to prevent command injection
+  if !url.starts_with("https://") && !url.starts_with("http://") {
+    return serde_json::json!({ "ok": false, "error": "URL must start with http:// or https://" });
+  }
+
+  let result = {
+    #[cfg(target_os = "windows")]
+    {
+      std::process::Command::new("cmd")
+        .args(["/c", "start", "", &url])
+        .spawn()
+    }
+    #[cfg(target_os = "macos")]
+    {
+      std::process::Command::new("open").arg(&url).spawn()
+    }
+    #[cfg(target_os = "linux")]
+    {
+      std::process::Command::new("xdg-open").arg(&url).spawn()
+    }
+  };
+
+  match result {
+    Ok(_) => serde_json::json!({ "ok": true }),
+    Err(e) => serde_json::json!({ "ok": false, "error": format!("{}", e) }),
+  }
+}
+
 /// Auto-start the daemon on app launch.
 /// Spawns the daemon if not already running, then waits up to ~6 seconds
 /// for it to become reachable. Runs on a background thread so the UI is
@@ -713,7 +959,11 @@ fn main() {
       check_claude_config,
       setup_claude_config,
       open_claude_config_file,
+      check_update,
+      collect_logs,
+      open_url,
     ])
+    .plugin(tauri_plugin_dialog::init())
     .setup(|app| {
       // Auto-start daemon on a background thread so UI is not blocked
       let app_handle = app.handle().clone();

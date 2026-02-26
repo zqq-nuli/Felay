@@ -102,6 +102,23 @@ const dict: Record<string, Record<Locale, string>> = {
   "settings.saveFailed": { zh: "保存失败", en: "Save failed" },
   "settings.loading": { zh: "加载中...", en: "Loading settings..." },
 
+  // About & Updates
+  "settings.about": { zh: "关于 & 更新", en: "About & Updates" },
+  "settings.currentVersion": { zh: "当前版本", en: "Current Version" },
+  "settings.latestVersion": { zh: "最新版本", en: "Latest Version" },
+  "settings.checkUpdate": { zh: "检查更新", en: "Check for Updates" },
+  "settings.upToDate": { zh: "已是最新版本", en: "Up to date" },
+  "settings.newVersion": { zh: "发现新版本!", en: "New version available!" },
+  "settings.download": { zh: "前往下载", en: "Download" },
+  "settings.checkFailed": { zh: "检查失败", en: "Check failed" },
+  "settings.exportLogs": { zh: "导出诊断日志", en: "Export Diagnostic Logs" },
+  "settings.exportLogsHint": { zh: "遇到问题？导出日志帮助排查", en: "Having issues? Export logs for troubleshooting" },
+  "settings.exporting": { zh: "导出中...", en: "Exporting..." },
+  "settings.exportDone": { zh: "日志已保存至", en: "Logs saved to" },
+  "settings.exportFailed": { zh: "导出失败", en: "Export failed" },
+  "settings.exportCancelled": { zh: "已取消", en: "Cancelled" },
+  "settings.saving": { zh: "保存中...", en: "Saving..." },
+
   // Common
   "common.daemon": { zh: "Daemon", en: "Daemon" },
   "common.unknown": { zh: "未知", en: "Unknown" },
