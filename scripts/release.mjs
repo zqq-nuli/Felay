@@ -4,8 +4,9 @@
  *
  * One-command pipeline to produce a ready-to-distribute NSIS installer.
  *
- *   node scripts/release.mjs            # build installer only
- *   node scripts/release.mjs --publish  # build + create GitHub pre-release
+ *   node scripts/release.mjs              # build installer only
+ *   node scripts/release.mjs --publish   # build + create GitHub release (latest)
+ *   node scripts/release.mjs --publish --prerelease  # build + create pre-release
  *
  * Pipeline:
  *   1. Kill running daemon (avoid file locks)
@@ -78,6 +79,7 @@ function killDaemon() {
 
 const args = process.argv.slice(2);
 const publish = args.includes("--publish");
+const prerelease = args.includes("--prerelease");
 
 const version = readVersion();
 log(`Felay v${version} — full release build`);
@@ -130,7 +132,7 @@ console.log(`  Version:   ${version}`);
 // Step 4 (optional): Publish to GitHub
 if (publish) {
   log("Step 4/4 — Publishing to GitHub Releases...");
-  const tag = `v${version}-beta`;
+  const tag = prerelease ? `v${version}-beta` : `v${version}`;
   try {
     execFileSync("gh", ["--version"], { stdio: "pipe" });
   } catch {
@@ -139,7 +141,7 @@ if (publish) {
   }
 
   const body = [
-    `## Felay v${version}-beta\n`,
+    `## Felay ${tag}\n`,
     "### Install",
     `Download \`${installerName}\` and run.\n`,
     "### What's included",
@@ -152,8 +154,10 @@ if (publish) {
     "- Windows 10/11 x64",
   ].join("\n");
 
-  run(`gh release create ${tag} "${installerPath}#${installerName}" --title "${tag}" --prerelease --notes "${body.replace(/"/g, '\\"')}"`);
-  log("Published!");
+  const prereleaseFlag = prerelease ? " --prerelease" : " --latest";
+  run(`gh release create ${tag} "${installerPath}#${installerName}" --title "${tag}"${prereleaseFlag} --notes "${body.replace(/"/g, '\\"')}"`);
+  log(`Published ${tag}!`);
 } else {
-  console.log(`\n  To publish: node scripts/release.mjs --publish`);
+  console.log(`\n  To publish:  node scripts/release.mjs --publish`);
+  console.log(`  Pre-release: node scripts/release.mjs --publish --prerelease`);
 }
