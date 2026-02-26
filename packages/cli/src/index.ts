@@ -138,7 +138,10 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false): 
   const cwd = process.cwd();
   const startedAt = new Date().toISOString();
 
+  process.stderr.write(`[felay] mode: ${proxyMode ? "proxy" : "pty"}\n`);
+  process.stderr.write(`[felay] ensuring daemon is running...\n`);
   await ensureDaemonRunning();
+  process.stderr.write(`[felay] daemon ready\n`);
 
   // Auto-configure CLI-specific hooks (skip in proxy mode — proxy handles output)
   if (!proxyMode) {
@@ -158,6 +161,7 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false): 
   const proxyDaemonRef: { socket: net.Socket | null; connected: boolean } = { socket: null, connected: false };
 
   if (proxyMode) {
+    process.stderr.write(`[felay] setting up API proxy...\n`);
     const envConfig = getProxyEnvConfig(cli);
     if (!envConfig) {
       process.stderr.write(`[felay] API proxy mode is not supported for "${cli}" (only claude, codex, and gemini are supported)\n`);
@@ -166,6 +170,7 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false): 
 
     // Resolve the actual upstream URL (checks settings.json, env, default)
     const originalUpstream = resolveUpstream(envConfig.envVar, envConfig.defaultUpstream, cli);
+    process.stderr.write(`[felay] proxy: ${envConfig.provider} → ${originalUpstream}\n`);
 
     // Debug logging to file (TUI overwrites stderr)
     const proxyLogFile = path.join(os.homedir(), ".felay", "proxy-debug.log");
@@ -195,6 +200,7 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false): 
     );
 
     const proxyUrl = `http://127.0.0.1:${proxyServer.port}`;
+    process.stderr.write(`[felay] proxy ready on :${proxyServer.port}\n`);
     plog(`proxy ready on port ${proxyServer.port} → ${originalUpstream}`);
 
     // Set env var override (works for CLIs that respect env vars)
@@ -546,9 +552,126 @@ async function daemonStopCommand(): Promise<void> {
   process.exit(1);
 }
 
+// pkg embeds package.json in snapshot — read version at runtime
+function getVersion(): string {
+  try {
+    // Try reading from the package.json (works in dev and pkg)
+    const pkgPath = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/i, "$1")), "..", "package.json");
+    return JSON.parse(fs.readFileSync(pkgPath, "utf8")).version ?? "unknown";
+  } catch {
+    return "0.1.24";
+  }
+}
+
+async function diagnoseCommand(): Promise<void> {
+  const lines: string[] = [];
+  const log = (s: string) => lines.push(s);
+
+  log("=== Felay Diagnostics ===");
+  log(`version:    ${getVersion()}`);
+  log(`platform:   ${process.platform} ${process.arch}`);
+  log(`node:       ${process.version}`);
+  log(`os:         ${os.type()} ${os.release()}`);
+  log(`cwd:        ${process.cwd()}`);
+  log(`homedir:    ${os.homedir()}`);
+  log(`ComSpec:    ${process.env.ComSpec ?? "(not set)"}`);
+  log(`SystemRoot: ${process.env.SystemRoot ?? "(not set)"}`);
+  log(`PATHEXT:    ${process.env.PATHEXT ?? "(not set)"}`);
+  log(`shell:      ${process.env.SHELL ?? process.env.COMSPEC ?? "(not set)"}`);
+
+  // PATH dirs
+  const pathDirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  log(`PATH dirs:  ${pathDirs.length}`);
+
+  // Check key executables
+  log("");
+  log("=== CLI Resolution ===");
+  for (const cli of ["codex", "claude", "gemini"]) {
+    const where = spawnSync("where", [cli], { encoding: "utf8", shell: true, windowsHide: true });
+    if (where.status === 0) {
+      const found = where.stdout.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      log(`${cli}: ${found[0]}${found.length > 1 ? ` (+${found.length - 1} more)` : ""}`);
+    } else {
+      log(`${cli}: NOT FOUND`);
+    }
+  }
+
+  // Daemon status
+  log("");
+  log("=== Daemon ===");
+  const lockPath = path.join(os.homedir(), ".felay", "daemon.json");
+  try {
+    const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+    log(`lock file:  ${lockPath}`);
+    log(`daemon pid: ${lock.pid}`);
+    log(`ipc:        ${lock.ipc}`);
+
+    // Check if daemon is alive
+    try {
+      const status = await daemonStatus();
+      log(`status:     running (sessions=${status.payload.activeSessions})`);
+    } catch {
+      log(`status:     lock exists but daemon not reachable`);
+    }
+  } catch {
+    log(`lock file:  not found`);
+    log(`status:     not running`);
+  }
+
+  // Config
+  log("");
+  log("=== Config ===");
+  const configPath = path.join(os.homedir(), ".felay", "config.json");
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    const botCount = config.bots?.length ?? 0;
+    log(`config:     ${configPath} (${botCount} bots)`);
+  } catch {
+    log(`config:     not found`);
+  }
+
+  // node-pty native module
+  log("");
+  log("=== node-pty ===");
+  try {
+    // Check if pty module loaded successfully (it already imported at top)
+    log(`module:     loaded OK`);
+    if (process.platform === "win32") {
+      // Check for conpty files
+      const exeDir = path.dirname(process.execPath);
+      const prebuildsDir = path.join(exeDir, "prebuilds", "win32-x64");
+      const conptyDir = path.join(prebuildsDir, "conpty");
+      log(`exec path:  ${process.execPath}`);
+      log(`prebuilds:  ${fs.existsSync(prebuildsDir) ? "OK" : "MISSING"} (${prebuildsDir})`);
+      for (const f of ["pty.node", "conpty.node"]) {
+        const fp = path.join(prebuildsDir, f);
+        log(`  ${f}: ${fs.existsSync(fp) ? "OK" : "MISSING"}`);
+      }
+      for (const f of ["conpty.dll", "OpenConsole.exe"]) {
+        const fp = path.join(conptyDir, f);
+        log(`  conpty/${f}: ${fs.existsSync(fp) ? "OK" : "MISSING"}`);
+      }
+    }
+  } catch (e: any) {
+    log(`module:     FAILED (${e.message})`);
+  }
+
+  // pkg snapshot detection
+  log("");
+  log("=== Runtime ===");
+  const inSnapshot = process.execPath.includes("\\snapshot\\") || process.execPath.includes("/snapshot/");
+  log(`pkg binary: ${inSnapshot ? "yes" : "no (dev mode)"}`);
+  log(`execPath:   ${process.execPath}`);
+
+  console.log(lines.join("\n"));
+}
+
 program
   .name("felay")
-  .description("Felay — Feishu CLI Proxy")
+  .version(getVersion(), "-v, --version")
+  .description("Felay — Feishu CLI Proxy");
+
+program
   .command("run <cli> [args...]")
   .description("Run CLI in PTY and bridge to daemon")
   .option("--pty", "Use PTY output parsing instead of API proxy (fallback mode)")
@@ -556,6 +679,11 @@ program
   .action(async (cli: string, args: string[] = [], opts: { pty?: boolean }) => {
     await runCli(cli, args, !(opts.pty ?? false));
   });
+
+program
+  .command("diagnose")
+  .description("Print diagnostic info for troubleshooting")
+  .action(async () => diagnoseCommand());
 
 const daemon = program.command("daemon").description("Manage local daemon process");
 daemon.command("start").action(async () => daemonStart());
