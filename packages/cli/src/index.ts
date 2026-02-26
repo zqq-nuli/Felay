@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import net from "node:net";
 import { nanoid } from "nanoid";
-import { spawnSync } from "node:child_process";
+import { spawnSync, spawn as cpSpawn } from "node:child_process";
 import path from "node:path";
 import {
   toJsonLine,
@@ -82,6 +82,18 @@ function resolveWindowsCli(cli: string): string {
   return cli;
 }
 
+/**
+ * Detect Windows 10 where ConPTY is unreliable.
+ * Win10 22H2 (build 19045) has known conpty bugs (node-pty #640, #471)
+ * that freeze TUI apps. Win11 (build 22000+) works fine.
+ */
+function isWin10(): boolean {
+  if (process.platform !== "win32") return false;
+  const ver = os.release(); // e.g., "10.0.19045" or "10.0.22631"
+  const build = parseInt(ver.split(".")[2] ?? "0", 10);
+  return build > 0 && build < 22000;
+}
+
 function isCodexCli(cli: string): boolean {
   const base = cli.replace(/\\/g, "/").split("/").pop() || "";
   const name = base.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
@@ -133,7 +145,7 @@ async function ensureClaudeHook(): Promise<void> {
   }
 }
 
-async function runCli(cli: string, args: string[], proxyMode: boolean = false): Promise<void> {
+async function runCli(cli: string, args: string[], proxyMode: boolean = false, forceDirectMode: boolean = false): Promise<void> {
   const sessionId = nanoid(10);
   const cwd = process.cwd();
   const startedAt = new Date().toISOString();
@@ -265,24 +277,92 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false): 
     }
   }
 
+  const useDirectMode = forceDirectMode || isWin10();
+
   process.stderr.write(`[felay] spawn: ${resolvedCli} ${JSON.stringify(spawnArgs)}\n`);
+  process.stderr.write(`[felay] direct mode: ${useDirectMode ? "yes" : "no"}${isWin10() ? " (auto: Win10 detected)" : ""}\n`);
 
   const baseEnv = Object.fromEntries(
     Object.entries(process.env).filter((e): e is [string, string] => e[1] != null)
   );
 
+  // ══════════════════════════════════════════════════════════════════════
+  // DIRECT MODE: child_process.spawn with stdio: 'inherit'
+  // Bypasses ConPTY entirely — TUI renders directly in user's terminal.
+  // Used on Win10 where ConPTY is unreliable, or via --direct flag.
+  // In proxy mode, output capture is not needed (API responses come
+  // through the proxy), so we only lose feishu_input injection.
+  // ══════════════════════════════════════════════════════════════════════
+  if (useDirectMode) {
+    // Connect to daemon for session registration + proxy events
+    let daemonSocket: net.Socket | null = null;
+    let connected = false;
+
+    try {
+      const ipc = await getLiveDaemonIpc();
+      const socket = await connectDaemon(ipc ?? undefined);
+      daemonSocket = socket;
+      connected = true;
+      proxyDaemonRef.socket = socket;
+      proxyDaemonRef.connected = true;
+
+      const register: SessionRegistration = {
+        type: "register_session",
+        payload: { sessionId, cli, args, cwd, pid: process.pid, startedAt, proxyMode: proxyMode || undefined },
+      };
+      socket.write(toJsonLine(register));
+
+      socket.on("error", () => { connected = false; daemonSocket = null; proxyDaemonRef.socket = null; proxyDaemonRef.connected = false; });
+      socket.on("close", () => { connected = false; daemonSocket = null; proxyDaemonRef.socket = null; proxyDaemonRef.connected = false; });
+    } catch {
+      process.stderr.write("[felay] daemon unavailable. Running without Feishu bridging.\n");
+    }
+
+    const child = cpSpawn(resolvedCli, spawnArgs, {
+      stdio: "inherit",
+      shell: false,
+      windowsHide: false,
+      env: { ...baseEnv, ...proxyEnv, TERM: "xterm-256color" },
+      cwd,
+    });
+
+    child.on("error", (err) => {
+      process.stderr.write(`[felay] spawn error: ${err.message}\n`);
+      process.exit(1);
+    });
+
+    child.on("exit", (code, signal) => {
+      if (daemonSocket && connected) {
+        const ended: SessionEndedEvent = {
+          type: "session_ended",
+          payload: { sessionId, at: new Date().toISOString() },
+        };
+        try {
+          daemonSocket.write(toJsonLine(ended));
+          daemonSocket.end();
+        } catch {}
+      }
+      if (proxyServer) {
+        proxyServer.close().catch(() => {});
+      }
+      process.exit(code ?? (signal ? 1 : 0));
+    });
+
+    return;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // PTY MODE: node-pty with ConPTY (default on Win11+ and non-Windows)
+  // Full bidirectional: captures PTY output, injects feishu_input,
+  // and forwards everything to daemon.
+  // ══════════════════════════════════════════════════════════════════════
   const ptyProcess = pty.spawn(resolvedCli, spawnArgs, {
     name: "xterm-color",
     cols: process.stdout.columns || 120,
     rows: process.stdout.rows || 30,
     cwd,
     env: { ...baseEnv, ...proxyEnv },
-    // Use the conpty.dll + OpenConsole.exe bundled with node-pty instead of
-    // the Windows system conpty. Windows 10 22H2 (build 19045) has known
-    // conpty bugs that freeze TUI apps. The bundled version is from the
-    // Windows Terminal project and doesn't have these issues.
-    useConptyDll: true,
-  } as any);
+  });
 
   // ── Connection state (PTY lifecycle is independent of daemon socket) ──
   let daemonSocket: net.Socket | null = null;
@@ -564,7 +644,7 @@ function getVersion(): string {
     const pkgPath = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/i, "$1")), "..", "package.json");
     return JSON.parse(fs.readFileSync(pkgPath, "utf8")).version ?? "unknown";
   } catch {
-    return "0.1.25";
+    return "0.1.26";
   }
 }
 
@@ -583,6 +663,7 @@ async function diagnoseCommand(): Promise<void> {
   log(`SystemRoot: ${process.env.SystemRoot ?? "(not set)"}`);
   log(`PATHEXT:    ${process.env.PATHEXT ?? "(not set)"}`);
   log(`shell:      ${process.env.SHELL ?? process.env.COMSPEC ?? "(not set)"}`);
+  log(`isWin10:    ${isWin10()} (auto-direct mode: ${isWin10() ? "enabled" : "disabled"})`);
 
   // PATH dirs
   const pathDirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
@@ -679,7 +760,7 @@ async function diagnoseCommand(): Promise<void> {
       cols: 80,
       rows: 24,
       cwd: os.homedir(),
-      useConptyDll: true,
+      useConptyDll: false,
       env: Object.fromEntries(
         Object.entries(process.env).filter((e): e is [string, string] => e[1] != null)
       ),
@@ -728,7 +809,7 @@ async function diagnoseCommand(): Promise<void> {
             name: "xterm-color",
             cols: 80,
             rows: 24,
-            useConptyDll: true,
+            useConptyDll: false,
             cwd: os.homedir(),
             env: Object.fromEntries(
               Object.entries(process.env).filter((e): e is [string, string] => e[1] != null)
@@ -768,9 +849,10 @@ program
   .command("run <cli> [args...]")
   .description("Run CLI in PTY and bridge to daemon")
   .option("--pty", "Use PTY output parsing instead of API proxy (fallback mode)")
+  .option("--direct", "Use direct spawn (stdio inherit) instead of PTY — bypasses ConPTY issues on Win10")
   .allowUnknownOption(true)
-  .action(async (cli: string, args: string[] = [], opts: { pty?: boolean }) => {
-    await runCli(cli, args, !(opts.pty ?? false));
+  .action(async (cli: string, args: string[] = [], opts: { pty?: boolean; direct?: boolean }) => {
+    await runCli(cli, args, !(opts.pty ?? false), opts.direct ?? false);
   });
 
 program

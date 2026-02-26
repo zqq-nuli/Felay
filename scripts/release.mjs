@@ -5,8 +5,8 @@
  * One-command pipeline to produce a ready-to-distribute NSIS installer.
  *
  *   node scripts/release.mjs              # build installer only
- *   node scripts/release.mjs --publish   # build + create GitHub release (latest)
- *   node scripts/release.mjs --publish --prerelease  # build + create pre-release
+ *   node scripts/release.mjs --publish   # build + create GitHub pre-release (default in alpha)
+ *   node scripts/release.mjs --publish --latest  # build + create stable release
  *
  * Pipeline:
  *   1. Kill running daemon (avoid file locks)
@@ -79,7 +79,8 @@ function killDaemon() {
 
 const args = process.argv.slice(2);
 const publish = args.includes("--publish");
-const prerelease = args.includes("--prerelease");
+// Default to prerelease (alpha stage). Use --latest to mark as stable.
+const prerelease = !args.includes("--latest");
 
 const version = readVersion();
 log(`Felay v${version} — full release build`);
@@ -140,24 +141,39 @@ if (publish) {
     process.exit(1);
   }
 
-  const body = [
-    `## Felay ${tag}\n`,
-    "### Install",
-    `Download \`${installerName}\` and run.\n`,
-    "### What's included",
-    "- Felay GUI (Tauri desktop app)",
-    "- Felay Daemon (background service)",
-    "- Felay CLI (`felay run claude` / `felay run codex`)",
-    "- Hook scripts (Codex notify + Claude Code Stop)",
-    "- node-pty native modules\n",
-    "### System requirements",
-    "- Windows 10/11 x64",
-  ].join("\n");
+  // Read version-specific release notes from RELEASE_NOTES.md, or use generic body
+  const notesFile = path.join(ROOT, "RELEASE_NOTES.md");
+  let body;
+  if (fs.existsSync(notesFile)) {
+    body = fs.readFileSync(notesFile, "utf8").trim();
+    log(`Using release notes from RELEASE_NOTES.md`);
+  } else {
+    body = [
+      `## Felay ${tag}\n`,
+      "### Install",
+      `Download \`${installerName}\` and run.\n`,
+      "### What's included",
+      "- Felay GUI (Tauri desktop app)",
+      "- Felay Daemon (background service)",
+      "- Felay CLI (`felay run claude` / `felay run codex`)",
+      "- Hook scripts (Codex notify + Claude Code Stop)",
+      "- node-pty native modules\n",
+      "### System requirements",
+      "- Windows 10/11 x64",
+    ].join("\n");
+  }
 
   const prereleaseFlag = prerelease ? " --prerelease" : " --latest";
-  run(`gh release create ${tag} "${installerPath}#${installerName}" --title "${tag}"${prereleaseFlag} --notes "${body.replace(/"/g, '\\"')}"`);
+  // Write body to temp file to avoid shell escaping issues
+  const bodyFile = path.join(ROOT, ".release-body-tmp.md");
+  fs.writeFileSync(bodyFile, body, "utf8");
+  try {
+    run(`gh release create ${tag} "${installerPath}#${installerName}" --title "${tag}"${prereleaseFlag} --notes-file "${bodyFile}"`);
+  } finally {
+    try { fs.unlinkSync(bodyFile); } catch {}
+  }
   log(`Published ${tag}!`);
 } else {
-  console.log(`\n  To publish:  node scripts/release.mjs --publish`);
-  console.log(`  Pre-release: node scripts/release.mjs --publish --prerelease`);
+  console.log(`\n  To publish (pre-release): node scripts/release.mjs --publish`);
+  console.log(`  To publish (stable):     node scripts/release.mjs --publish --latest`);
 }
