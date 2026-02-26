@@ -1,5 +1,6 @@
 import http from "node:http";
 import https from "node:https";
+import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -799,6 +800,39 @@ export async function startApiProxy(
 
     // Pipe client request body to upstream
     clientReq.pipe(proxyReq);
+  });
+
+  // ── CONNECT tunnel support ──
+  // When HTTP_PROXY is set, Rust reqwest (and other HTTP clients) send a
+  // CONNECT request to establish a tunnel for HTTPS traffic. Without this
+  // handler, CONNECT requests are silently dropped and the client hangs.
+  server.on("connect", (req: http.IncomingMessage, clientSocket: net.Socket, head: Buffer) => {
+    const target = req.url ?? "";
+    const [hostname, portStr] = target.split(":");
+    const port = parseInt(portStr, 10) || 443;
+
+    proxyLog(`CONNECT ${target}`);
+
+    const serverSocket = net.connect(port, hostname, () => {
+      clientSocket.write(
+        "HTTP/1.1 200 Connection Established\r\n" +
+        "Proxy-agent: felay-proxy\r\n" +
+        "\r\n"
+      );
+      if (head.length > 0) serverSocket.write(head);
+      serverSocket.pipe(clientSocket);
+      clientSocket.pipe(serverSocket);
+    });
+
+    serverSocket.on("error", (err) => {
+      proxyLog(`CONNECT error ${target}: ${err.message}`);
+      clientSocket.write("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+      clientSocket.end();
+    });
+
+    clientSocket.on("error", () => {
+      serverSocket.destroy();
+    });
   });
 
   return new Promise((resolve, reject) => {

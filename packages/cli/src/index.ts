@@ -277,7 +277,12 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false): 
     rows: process.stdout.rows || 30,
     cwd,
     env: { ...baseEnv, ...proxyEnv },
-  });
+    // Use the conpty.dll + OpenConsole.exe bundled with node-pty instead of
+    // the Windows system conpty. Windows 10 22H2 (build 19045) has known
+    // conpty bugs that freeze TUI apps. The bundled version is from the
+    // Windows Terminal project and doesn't have these issues.
+    useConptyDll: true,
+  } as any);
 
   // ── Connection state (PTY lifecycle is independent of daemon socket) ──
   let daemonSocket: net.Socket | null = null;
@@ -559,7 +564,7 @@ function getVersion(): string {
     const pkgPath = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/i, "$1")), "..", "package.json");
     return JSON.parse(fs.readFileSync(pkgPath, "utf8")).version ?? "unknown";
   } catch {
-    return "0.1.24";
+    return "0.1.25";
   }
 }
 
@@ -656,12 +661,100 @@ async function diagnoseCommand(): Promise<void> {
     log(`module:     FAILED (${e.message})`);
   }
 
-  // pkg snapshot detection
+  // Runtime info
   log("");
   log("=== Runtime ===");
-  const inSnapshot = process.execPath.includes("\\snapshot\\") || process.execPath.includes("/snapshot/");
-  log(`pkg binary: ${inSnapshot ? "yes" : "no (dev mode)"}`);
+  const isPkg = !process.execPath.endsWith("node.exe") && !process.execPath.endsWith("node");
+  log(`pkg binary: ${isPkg ? "yes" : "no (dev mode)"}`);
   log(`execPath:   ${process.execPath}`);
+
+  // PTY self-test: spawn a simple command through node-pty to verify conpty works
+  log("");
+  log("=== PTY Self-Test ===");
+  try {
+    const comspec = process.env.ComSpec || "C:\\Windows\\system32\\cmd.exe";
+    const testOutput: string[] = [];
+    const testPty = pty.spawn(comspec, ["/c", "echo __FELAY_PTY_OK__"], {
+      name: "xterm-color",
+      cols: 80,
+      rows: 24,
+      cwd: os.homedir(),
+      useConptyDll: true,
+      env: Object.fromEntries(
+        Object.entries(process.env).filter((e): e is [string, string] => e[1] != null)
+      ),
+    } as any);
+
+    const result = await new Promise<string>((resolve) => {
+      let output = "";
+      const timer = setTimeout(() => {
+        testPty.kill();
+        resolve(`TIMEOUT (5s) — conpty may not work on this system. Partial output: ${JSON.stringify(output.slice(0, 200))}`);
+      }, 5000);
+
+      testPty.onData((chunk) => {
+        output += chunk;
+        if (output.includes("__FELAY_PTY_OK__")) {
+          clearTimeout(timer);
+          testPty.kill();
+          resolve("PASS — conpty works");
+        }
+      });
+
+      testPty.onExit(() => {
+        clearTimeout(timer);
+        if (output.includes("__FELAY_PTY_OK__")) {
+          resolve("PASS — conpty works");
+        } else {
+          resolve(`FAIL — process exited but no output. Raw: ${JSON.stringify(output.slice(0, 200))}`);
+        }
+      });
+    });
+    log(`echo test:  ${result}`);
+
+    // Test spawning a .cmd through cmd.exe /c (same path as felay run)
+    const codexWhere = spawnSync("where", ["codex"], { encoding: "utf8", shell: true, windowsHide: true });
+    if (codexWhere.status === 0) {
+      const codexLines = codexWhere.stdout.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      const codexCmd = codexLines.find(l => /\.(cmd|exe|bat)$/i.test(l)) || codexLines[0];
+      if (codexCmd) {
+        const isCmdFile = /\.(cmd|bat)$/i.test(codexCmd);
+        const spawnFile = isCmdFile ? comspec : codexCmd;
+        const spawnArgs = isCmdFile ? ["/c", codexCmd, "--version"] : ["--version"];
+
+        const cmdResult = await new Promise<string>((resolve) => {
+          let output = "";
+          const cmdPty = pty.spawn(spawnFile, spawnArgs, {
+            name: "xterm-color",
+            cols: 80,
+            rows: 24,
+            useConptyDll: true,
+            cwd: os.homedir(),
+            env: Object.fromEntries(
+              Object.entries(process.env).filter((e): e is [string, string] => e[1] != null)
+            ),
+          } as any);
+
+          const timer = setTimeout(() => {
+            cmdPty.kill();
+            resolve(`TIMEOUT (10s) — codex --version hung. Partial: ${JSON.stringify(output.slice(0, 300))}`);
+          }, 10000);
+
+          cmdPty.onData((chunk) => { output += chunk; });
+
+          cmdPty.onExit(({ exitCode }) => {
+            clearTimeout(timer);
+            const trimmed = output.replace(/\r?\n/g, " ").trim();
+            resolve(`exit=${exitCode} output=${JSON.stringify(trimmed.slice(0, 200))}`);
+          });
+        });
+        log(`codex test: ${cmdResult}`);
+        log(`  spawn:    ${spawnFile} ${JSON.stringify(spawnArgs)}`);
+      }
+    }
+  } catch (e: any) {
+    log(`pty test:   ERROR — ${e.message}`);
+  }
 
   console.log(lines.join("\n"));
 }
