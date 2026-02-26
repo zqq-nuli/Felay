@@ -105,6 +105,13 @@ Settings are stored in `~/.felay/config.json`:
 | `push.mergeWindow` | Message merge window for push (ms) | 2000 |
 | `input.enterRetryCount` | Enter auto-retry count (Windows only) | 2 |
 
+## Planned Features (TODO)
+
+We are planning to introduce the following features in upcoming releases to deepen terminal interaction capabilities and improve overall usability:
+
+1. **Interactive Prompts & Selections:** When the underlying AI CLI triggers an interactive prompt that requires user selection from a list or confirmation, it cannot currently be operated directly from Feishu. We plan to map these complex terminal TUI interactions into Feishu interactive card components (e.g., buttons, dropdown menus) for seamless remote selection and feedback.
+2. **Multi-level Command & Cascading Menu Support:** Current support is limited for CLI tools that utilize a multi-level command structure (e.g., typing `/model` followed by a secondary menu to select a specific model). We plan to introduce cascading menu interaction modes to fully support complex, multi-level terminal command workflows, significantly enhancing the flexibility of issuing complex directives from Feishu.
+
 ## Known Issues
 
 **Windows ConPTY Bug**: Windows' ConPTY has a defect where `\r` may not translate to Enter during multi-turn chats. Felay mitigates this by auto-retrying Enter keys. macOS/Linux are not affected.
