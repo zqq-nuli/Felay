@@ -206,6 +206,8 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false): 
   let resolvedCli = resolveWindowsCli(cli);
   let spawnArgs = args;
 
+  process.stderr.write(`[felay] resolve: "${cli}" → "${resolvedCli}"\n`);
+
   // On Windows, .cmd/.bat files cannot be executed directly by node-pty;
   // they must be launched through cmd.exe /c
   if (
@@ -215,6 +217,27 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false): 
     spawnArgs = ["/c", resolvedCli, ...args];
     resolvedCli = "cmd.exe";
   }
+
+  // Pre-flight check: verify the resolved executable exists before handing
+  // off to conpty, which gives an unhelpful "File not found:" error.
+  if (process.platform === "win32" && resolvedCli !== "cmd.exe") {
+    const exists = path.isAbsolute(resolvedCli)
+      ? fs.existsSync(resolvedCli)
+      : spawnSync("where", [resolvedCli], { encoding: "utf8", shell: true, windowsHide: true }).status === 0;
+    if (!exists) {
+      const msg = [
+        `[felay] fatal: '${cli}' not found.`,
+        `  resolved path: ${resolvedCli}`,
+        `  PATHEXT: ${process.env.PATHEXT || "(not set)"}`,
+        `  PATH dirs searched: ${(process.env.PATH || "").split(";").length}`,
+        `  Ensure '${cli}' is installed and available in your PATH.`,
+      ].join("\n");
+      process.stderr.write(msg + "\n");
+      process.exit(1);
+    }
+  }
+
+  process.stderr.write(`[felay] spawn: ${resolvedCli} ${JSON.stringify(spawnArgs)}\n`);
 
   const baseEnv = Object.fromEntries(
     Object.entries(process.env).filter((e): e is [string, string] => e[1] != null)
