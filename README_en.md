@@ -13,6 +13,16 @@
 
 Felay wraps local AI CLIs (Codex / Claude Code / Gemini CLI) via `felay run <command>`, bridging your local terminal with a Feishu (Lark) bot. Send messages to the AI from Feishu, receive replies back — while your local terminal stays fully usable.
 
+## Why Felay?
+
+We used to be tied down by dev tools, now it's AI CLIs — either way, you end up staring at a black terminal window all day.
+
+The thing is, AI is already pretty capable. A lot of the time you could just send a prompt and walk away. But you don't, because you need to watch the output and reply when it asks questions.
+
+My health hasn't been great these past couple of years. I kept wanting to get out, experience life a bit, but there was always some dev task keeping me glued to my desk. The idea of remotely controlling my terminal had been in my head for a long time. Then I tried OpenClaw, and the thing that struck me most wasn't the product itself — it was the ability to plug into tools like Feishu and Telegram, so terminal work could happen from your phone. I finally committed to building it over the Chinese New Year break, and that became Felay. Recently Anthropic launched Claude Remote, which is a similar direction, but for now it only works in their own app and requires auth login.
+
+You might ask — why not just call the API directly with streaming JSON, like projects such as vibe-kanban do, and build a standalone UI? Because I want to know exactly what's happening on my machine. I don't want to hand things off to a black box and hope for the best. Felay keeps your local terminal fully intact — start it before you leave your desk, follow along on your phone while the AI keeps working, and when you sit back down, everything is right there in the terminal. You can pick up exactly where it left off.
+
 ## Features
 
 - **Bidirectional Chat** — Real-time text/image/rich-text messaging between Feishu and CLI via WebSocket
