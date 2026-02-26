@@ -207,6 +207,7 @@ Why not just call the API directly with streaming JSON, like projects such as vi
 - [ ] **TODO list display** — AI CLIs create TODO lists during task execution; sync and display them in Feishu for real-time progress tracking
 - [ ] **Interactive prompt mapping** — Map CLI TUI interactions (list selection, confirmation prompts) to Feishu card components (buttons, dropdowns)
 - [ ] **Multi-level command support** — Handle cascading CLI menus (e.g., `/model` → model picker) as multi-step Feishu interactions
+- [ ] **Messaging platform plugins** — Extract the Feishu bot as a plugin, enabling future support for other platforms (e.g., Telegram, DingTalk)
 
 ## Known Issues
 
