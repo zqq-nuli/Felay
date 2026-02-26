@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.5.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry & target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/gui/src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('packages/gui/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build TypeScript packages
+        run: pnpm run build
+
+      - name: Build standalone binaries
+        run: node scripts/build-binaries.mjs
+
+      - name: Verify build artifacts
+        shell: bash
+        run: |
+          for f in build/felay.exe build/felay-daemon.exe build/felay-notify.js build/felay-claude-hook.js; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing artifact: $f"
+              exit 1
+            fi
+            echo "OK: $f"
+          done
+
+      - name: Build NSIS installer & create Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: packages/gui
+          tagName: ${{ github.ref_name }}
+          releaseName: "Felay ${{ steps.version.outputs.value }}"
+          releaseBody: "See the assets below to download and install."
+          releaseDraft: false
+          prerelease: false
