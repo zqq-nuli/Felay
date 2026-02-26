@@ -18,7 +18,8 @@
       "../../../build/felay-daemon.exe": "./",
       "../../../build/felay-notify.js": "./",
       "../../../build/felay-claude-hook.js": "./",
-      "../../../build/prebuilds/**/*": "prebuilds/"
+      "../../../build/prebuilds/win32-x64/*": "prebuilds/win32-x64/",
+      "../../../build/prebuilds/win32-x64/conpty/*": "prebuilds/win32-x64/conpty/"
     },
     "windows": {
       "nsis": {

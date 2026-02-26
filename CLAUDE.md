@@ -262,3 +262,48 @@ node packages/daemon/dist/index.js > daemon-log.txt 2>&1 &   # 后台启动新 d
 ```
 
 CLI 侧需要退出旧的 `felay run claude` / `felay run codex` 并重新启动。
+
+## Versioning
+
+本项目遵循 [Semantic Versioning (SemVer)](https://semver.org/) 规范，版本号格式为 `MAJOR.MINOR.PATCH`：
+
+- **MAJOR**（主版本号）：不兼容的破坏性变更（如 IPC 协议变更、配置格式变更等需要用户迁移的改动）
+- **MINOR**（次版本号）：向后兼容的新功能（如新增 CLI 工具支持、新增飞书消息类型等）
+- **PATCH**（修订号）：向后兼容的 Bug 修复
+
+### 预发布版本
+
+- `alpha`：内部测试，如 `0.2.0-alpha.1`
+- `beta`：公开测试，如 `0.2.0-beta.1`
+- `rc`：发布候选，如 `0.2.0-rc.1`
+
+### 当前阶段
+
+项目目前处于 **alpha 测试阶段**（`0.x.y-alpha`），功能尚未完善，IPC 协议、配置格式、CLI 参数等可能随时变更，不保证向后兼容。版本演进路线：
+
+1. **`0.x.y-alpha`**（当前）：核心功能开发中，接口不稳定
+2. **`0.x.y-beta`**：核心功能基本完成，公开测试，收集反馈
+3. **`0.x.y-rc`**：功能冻结，仅修复 Bug
+4. **`1.0.0`**：核心功能稳定、跨平台验证完成、公开 API 定型
+
+### 发版流程
+
+```bash
+pnpm run release            # 交互式选择版本号，更新所有 package.json + 打 git tag
+pnpm run release:publish    # 同上 + 推送到 remote + 触发 GitHub Release
+```
+
+### Commit Message 规范
+
+遵循 [Conventional Commits](https://www.conventionalcommits.org/)：
+
+| 前缀 | 用途 | 版本影响 |
+|------|------|---------|
+| `feat:` | 新功能 | MINOR |
+| `fix:` | Bug 修复 | PATCH |
+| `docs:` | 文档变更 | 无 |
+| `refactor:` | 重构（不改变行为） | 无 |
+| `chore:` | 构建/工具链变更 | 无 |
+| `ci:` | CI/CD 配置 | 无 |
+| `release:` | 发版 | 按版本号 |
+| `BREAKING CHANGE:` | 破坏性变更（写在 commit body 中） | MAJOR |

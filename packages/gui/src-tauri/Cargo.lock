@@ -704,7 +704,7 @@ dependencies = [
 
 [[package]]
 name = "felay-gui"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "reqwest 0.12.28",
  "serde",

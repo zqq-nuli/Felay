@@ -37,6 +37,7 @@ _felay_path_done:
 
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 
-  ; Clean up configuration directory
-  RMDir /r "$PROFILE\.felay"
+  ; NOTE: Do NOT delete $PROFILE\.felay here.
+  ; The NSIS preuninstall hook runs during upgrades as well.
+  ; Deleting it would wipe user config (bots, master-key) on every update.
 !macroend
