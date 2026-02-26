@@ -113,3 +113,27 @@ Hook 脚本必须用 `entry.type === "assistant"` + `entry.message.content` 来�
 **原因**：当前使用 PTY 输出解析方式，无法完全过滤终端 TUI 渲染内容。
 
 **解决方法**：改用 Claude Code 官方 Stop hook 机制，从 transcript 文件中获取干净的 assistant 消息（参见 TASKS.md）。
+
+---
+
+## ConPTY 兼容性相关
+
+### `felay diagnose` 在 Windows 10 上挂起
+
+**现象**：运行 `felay diagnose` 后无输出，进程卡死需要 Ctrl+C。
+
+**原因**：`diagnose` 命令包含 PTY 自检（通过 node-pty 的 ConPTY 启动 `echo` 命令），Windows 10 22H2（build 19045）的 ConPTY 存在已知 Bug（node-pty #640、#471），导致 pty.spawn 后进程冻结。
+
+**影响版本**：Windows 10（build < 22000）。Windows 11 不受影响。
+
+**状态**：已知问题，待修复。计划在 diagnose 中检测 Win10 并跳过 PTY 自检，或改用 `child_process.spawn` 做自检。
+
+**临时解决方法**：在 Win10 上不使用 `felay diagnose`，可通过 `felay --version` 验证安装是否正常。
+
+### `felay run` TUI 冻结（Windows 10）
+
+**现象**：`felay run codex` 或 `felay run claude` 启动后，TUI 不渲染，终端无输出。
+
+**原因**：同上，ConPTY 在 Win10 上的 Bug。node-pty 1.1.0 已移除 winpty 后端，`useConpty: false` 不再有效。
+
+**解决方法**：v0.1.26 起自动检测 Win10 并启用 Direct 模式（`child_process.spawn({ stdio: 'inherit' })`），绕过 ConPTY。也可手动指定 `felay run --direct codex`。

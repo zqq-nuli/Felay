@@ -19,6 +19,12 @@ import { ensureDaemonRunning, getLiveDaemonIpc } from "./daemonLifecycle.js";
 import { startApiProxy, getProxyEnvConfig, resolveUpstream, writeHttpHook } from "./apiProxy.js";
 import type { CheckCodexConfigResponse, SetupCodexConfigResponse, CheckClaudeConfigResponse, SetupClaudeConfigResponse } from "@felay/shared";
 
+// Global debug flag — set by --debug option, controls verbose [felay] output
+let DEBUG = false;
+function dbg(msg: string): void {
+  if (DEBUG) process.stderr.write(`[felay] ${msg}\n`);
+}
+
 /**
  * Resolve a CLI name to an absolute path on Windows.
  *
@@ -113,7 +119,7 @@ async function ensureCodexNotifyHook(): Promise<void> {
 
     const setup = await requestDaemon<SetupCodexConfigResponse>({ type: "setup_codex_config_request" });
     if (setup.payload.ok) {
-      process.stderr.write("[felay] Codex notify hook 已自动配置\n");
+      dbg("Codex notify hook 已自动配置");
     } else {
       process.stderr.write(
         `[felay] Codex notify hook 配置失败: ${setup.payload.error ?? "unknown"}\n` +
@@ -133,7 +139,7 @@ async function ensureClaudeHook(): Promise<void> {
 
     const setup = await requestDaemon<SetupClaudeConfigResponse>({ type: "setup_claude_config_request" });
     if (setup.payload.ok) {
-      process.stderr.write("[felay] Claude Code Stop hook 已自动配置\n");
+      dbg("Claude Code Stop hook 已自动配置");
     } else {
       process.stderr.write(
         `[felay] Claude Code hook 配置失败: ${setup.payload.error ?? "unknown"}\n` +
@@ -150,10 +156,10 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false, f
   const cwd = process.cwd();
   const startedAt = new Date().toISOString();
 
-  process.stderr.write(`[felay] mode: ${proxyMode ? "proxy" : "pty"}\n`);
-  process.stderr.write(`[felay] ensuring daemon is running...\n`);
+  dbg(`mode: ${proxyMode ? "proxy" : "pty"}`);
+  dbg("ensuring daemon is running...");
   await ensureDaemonRunning();
-  process.stderr.write(`[felay] daemon ready\n`);
+  dbg("daemon ready");
 
   // Auto-configure CLI-specific hooks (skip in proxy mode — proxy handles output)
   if (!proxyMode) {
@@ -173,16 +179,16 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false, f
   const proxyDaemonRef: { socket: net.Socket | null; connected: boolean } = { socket: null, connected: false };
 
   if (proxyMode) {
-    process.stderr.write(`[felay] setting up API proxy...\n`);
+    dbg("setting up API proxy...");
     const envConfig = getProxyEnvConfig(cli);
     if (!envConfig) {
-      process.stderr.write(`[felay] API proxy mode is not supported for "${cli}" (only claude, codex, and gemini are supported)\n`);
+      process.stderr.write(`[felay] error: API proxy mode is not supported for "${cli}" (only claude, codex, and gemini are supported)\n`);
       process.exit(1);
     }
 
     // Resolve the actual upstream URL (checks settings.json, env, default)
     const originalUpstream = resolveUpstream(envConfig.envVar, envConfig.defaultUpstream, cli);
-    process.stderr.write(`[felay] proxy: ${envConfig.provider} → ${originalUpstream}\n`);
+    dbg(`proxy: ${envConfig.provider} → ${originalUpstream}`);
 
     // Debug logging to file (TUI overwrites stderr)
     const proxyLogFile = path.join(os.homedir(), ".felay", "proxy-debug.log");
@@ -212,7 +218,7 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false, f
     );
 
     const proxyUrl = `http://127.0.0.1:${proxyServer.port}`;
-    process.stderr.write(`[felay] proxy ready on :${proxyServer.port}\n`);
+    dbg(`proxy ready on :${proxyServer.port}`);
     plog(`proxy ready on port ${proxyServer.port} → ${originalUpstream}`);
 
     // Set env var override (works for CLIs that respect env vars)
@@ -239,7 +245,7 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false, f
   let resolvedCli = resolveWindowsCli(cli);
   let spawnArgs = args;
 
-  process.stderr.write(`[felay] resolve: "${cli}" → "${resolvedCli}"\n`);
+  dbg(`resolve: "${cli}" → "${resolvedCli}"`);
 
   if (process.platform === "win32") {
     // On Windows, .cmd/.bat files cannot be executed directly by node-pty;
@@ -279,8 +285,8 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false, f
 
   const useDirectMode = forceDirectMode || isWin10();
 
-  process.stderr.write(`[felay] spawn: ${resolvedCli} ${JSON.stringify(spawnArgs)}\n`);
-  process.stderr.write(`[felay] direct mode: ${useDirectMode ? "yes" : "no"}${isWin10() ? " (auto: Win10 detected)" : ""}\n`);
+  dbg(`spawn: ${resolvedCli} ${JSON.stringify(spawnArgs)}`);
+  dbg(`direct mode: ${useDirectMode ? "yes" : "no"}${isWin10() ? " (auto: Win10 detected)" : ""}`);
 
   const baseEnv = Object.fromEntries(
     Object.entries(process.env).filter((e): e is [string, string] => e[1] != null)
@@ -315,7 +321,7 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false, f
       socket.on("error", () => { connected = false; daemonSocket = null; proxyDaemonRef.socket = null; proxyDaemonRef.connected = false; });
       socket.on("close", () => { connected = false; daemonSocket = null; proxyDaemonRef.socket = null; proxyDaemonRef.connected = false; });
     } catch {
-      process.stderr.write("[felay] daemon unavailable. Running without Feishu bridging.\n");
+      dbg("daemon unavailable. Running without Feishu bridging.");
     }
 
     const child = cpSpawn(resolvedCli, spawnArgs, {
@@ -327,7 +333,7 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false, f
     });
 
     child.on("error", (err) => {
-      process.stderr.write(`[felay] spawn error: ${err.message}\n`);
+      process.stderr.write(`[felay] error: spawn failed: ${err.message}\n`);
       process.exit(1);
     });
 
@@ -456,7 +462,7 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false, f
     });
 
     socket.on("error", (err: Error) => {
-      process.stderr.write(`[felay] daemon connection error: ${err.message}\n`);
+      dbg(`daemon connection error: ${err.message}`);
       handleDisconnect();
     });
 
@@ -478,7 +484,7 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false, f
 
     if (sessionEnded) return;
 
-    process.stderr.write("[felay] daemon connection lost. PTY continues locally.\n");
+    dbg("daemon connection lost. PTY continues locally.");
     attemptReconnect(0);
   }
 
@@ -487,9 +493,7 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false, f
     reconnecting = true;
 
     if (attempt >= reconnectConfig.maxRetries) {
-      process.stderr.write(
-        `[felay] reconnection failed after ${reconnectConfig.maxRetries} attempts. Feishu bridging disabled.\n`
-      );
+      dbg(`reconnection failed after ${reconnectConfig.maxRetries} attempts. Feishu bridging disabled.`);
       reconnecting = false;
       return;
     }
@@ -507,19 +511,15 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false, f
       try {
         const ipc = await getLiveDaemonIpc();
         if (!ipc) {
-          process.stderr.write(
-            `[felay] daemon not available, retry ${attempt + 1}/${reconnectConfig.maxRetries}\n`
-          );
+          dbg(`daemon not available, retry ${attempt + 1}/${reconnectConfig.maxRetries}`);
           attemptReconnect(attempt + 1);
           return;
         }
         const socket = await connectDaemon(ipc);
-        process.stderr.write("[felay] reconnected to daemon\n");
+        dbg("reconnected to daemon");
         setupSocket(socket);
       } catch {
-        process.stderr.write(
-          `[felay] reconnect attempt ${attempt + 1}/${reconnectConfig.maxRetries} failed\n`
-        );
+        dbg(`reconnect attempt ${attempt + 1}/${reconnectConfig.maxRetries} failed`);
         attemptReconnect(attempt + 1);
       }
     }, delay);
@@ -531,9 +531,7 @@ async function runCli(cli: string, args: string[], proxyMode: boolean = false, f
     const socket = await connectDaemon(ipc ?? undefined);
     setupSocket(socket);
   } catch {
-    process.stderr.write(
-      "[felay] daemon unavailable. PTY running without Feishu bridging.\n"
-    );
+    dbg("daemon unavailable. PTY running without Feishu bridging.");
     attemptReconnect(0);
   }
 
@@ -843,7 +841,11 @@ async function diagnoseCommand(): Promise<void> {
 program
   .name("felay")
   .version(getVersion(), "-v, --version")
-  .description("Felay — Feishu CLI Proxy");
+  .description("Felay — Feishu CLI Proxy")
+  .option("--debug", "Show verbose debug logs")
+  .hook("preAction", () => {
+    if (program.opts().debug) DEBUG = true;
+  });
 
 program
   .command("run <cli> [args...]")
